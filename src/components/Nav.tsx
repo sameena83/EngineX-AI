@@ -7,6 +7,7 @@ const LINKS = [
   { href: "/", label: "Dashboard", icon: "◆" },
   { href: "/signals", label: "Signal feed", icon: "◎" },
   { href: "/outreach", label: "Outreach", icon: "✎" },
+  { href: "/analytics", label: "Analytics", icon: "◔" },
   { href: "/export", label: "Export", icon: "⤓" },
   { href: "/integrations", label: "Integrations", icon: "⇄" },
   { href: "/profile", label: "Service profile", icon: "⚙" },
