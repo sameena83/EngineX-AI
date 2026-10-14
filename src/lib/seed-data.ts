@@ -1,0 +1,776 @@
+import type { Profile, SignalType } from "./types";
+
+// ---------------------------------------------------------------------------
+// Sample workspace + sample market data for the launch niche:
+// data & AI consultancies (5-50 people) selling to US mid-market companies.
+//
+// These accounts are FICTIONAL sample records used to demonstrate the product.
+// In production the same shapes are filled from job-board APIs, press releases,
+// funding/M&A feeds, public tenders and a licensed contact provider.
+// ---------------------------------------------------------------------------
+
+export const SIGNAL_DEFINITIONS: Record<
+  SignalType,
+  { label: string; shortLabel: string; weight: number; why: string }
+> = {
+  new_data_leader: {
+    label: "New data leader, first 90 days",
+    shortLabel: "New data leader",
+    weight: 0.95,
+    why: "A newly appointed CDO / VP Data / Head of AI often brings in outside partners early.",
+  },
+  data_hiring_no_leadership: {
+    label: "Data hiring without data leadership",
+    shortLabel: "Hiring, no leader",
+    weight: 0.85,
+    why: "Data engineers or ML roles with no visible CDO or Head of Data — a gap a partner can fill.",
+  },
+  public_rfp: {
+    label: "Public RFP or tender",
+    shortLabel: "Public RFP",
+    weight: 0.9,
+    why: "A live tender mentioning data, analytics or AI is an explicit statement of need.",
+  },
+  funding_ma: {
+    label: "Funding or M&A",
+    shortLabel: "Funding / M&A",
+    weight: 0.7,
+    why: "New funding or an acquisition creates immediate data integration and reporting work.",
+  },
+  platform_adoption: {
+    label: "Platform adoption",
+    shortLabel: "Platform adoption",
+    weight: 0.6,
+    why: "Public evidence of a move to Snowflake, Databricks, dbt or similar.",
+  },
+};
+
+export const DEFAULT_PROFILE: Profile = {
+  companyName: "Northwind Data & AI",
+  website: "https://northwind-data.example",
+  headcount: "18",
+  region: "Stockholm, SE (selling to US)",
+  services: [
+    {
+      id: "svc-platform",
+      name: "Data platform engineering",
+      description:
+        "Design and build modern data platforms on Snowflake, Databricks and dbt, including ingestion, modelling and cost governance.",
+    },
+    {
+      id: "svc-analytics",
+      name: "Analytics & BI",
+      description:
+        "Turn warehouse data into decision-ready dashboards and semantic layers, and train internal teams to own them.",
+    },
+    {
+      id: "svc-ml",
+      name: "ML & LLM applications",
+      description:
+        "Ship production machine-learning and LLM applications, from evaluation and RAG pipelines to deployment and monitoring.",
+    },
+    {
+      id: "svc-governance",
+      name: "Data governance",
+      description:
+        "Stand up governance, lineage, quality and access controls so data teams can move fast without breaking trust.",
+    },
+  ],
+  idealClient: {
+    sector: "US mid-market companies (logistics, healthcare, financial services, retail, industrials)",
+    sizeMin: 200,
+    sizeMax: 5000,
+    region: "United States",
+    description:
+      "Mid-market US companies with real data volume, a small in-house team, and no senior data leadership — where a six-figure engagement creates visible leverage.",
+  },
+  caseStudies: [
+    {
+      id: "cs-1",
+      client: "Regional logistics operator",
+      sector: "Logistics",
+      problem:
+        "Ops data spread across three systems with no single source of truth; reporting took a week each month.",
+      outcome:
+        "Delivered a Snowflake + dbt platform and a governed reporting layer in 11 weeks; month-end reporting cut from 5 days to 4 hours.",
+      serviceLineId: "svc-platform",
+    },
+    {
+      id: "cs-2",
+      client: "Specialty insurance carrier",
+      sector: "Insurance",
+      problem:
+        "A new Head of Data inherited fragmented warehouses and no agreed metrics.",
+      outcome:
+        "Built a semantic layer and governance model; the data team shipped its first self-serve reporting to underwriting in 8 weeks.",
+      serviceLineId: "svc-governance",
+    },
+    {
+      id: "cs-3",
+      client: "Mid-market healthcare network",
+      sector: "Healthcare",
+      problem:
+        "Wanted an LLM assistant for clinical-ops documents but had no evaluation or safety process.",
+      outcome:
+        "Shipped a retrieval pipeline with an eval harness; assistant handles 40% of first-line internal queries with a documented accuracy baseline.",
+      serviceLineId: "svc-ml",
+    },
+  ],
+  tone: "consultative",
+  length: "medium",
+  digestIncludesContacts: false,
+  delivery: {
+    // The report's Slack Phase 1: a weekly digest plus strong-signal alerts.
+    digestCadence: "weekly",
+    alertMinScore: 80,
+    digestSize: 8,
+  },
+  sender: {
+    name: "Your Name, Northwind Data & AI",
+    email: "partners@northwind-data.example",
+    replyTo: "partners@northwind-data.example",
+  },
+};
+
+type SeedSignal = {
+  type: SignalType;
+  daysAgo: number;
+  summary: string;
+  evidence: string;
+  source: string;
+  sourceUrl?: string;
+  strength: number;
+};
+
+export type SeedAccount = {
+  name: string;
+  domain: string;
+  sector: string;
+  employees: number;
+  location: string;
+  description: string;
+  signals: SeedSignal[];
+  contacts: {
+    name: string;
+    title: string;
+    decisionMaker?: boolean;
+    emailStatus?: "verified" | "likely" | "unverified";
+  }[];
+};
+
+export const SEED_ACCOUNTS: SeedAccount[] = [
+  {
+    name: "Harborline Logistics",
+    domain: "harborline.example",
+    sector: "Logistics",
+    employees: 850,
+    location: "Chicago, IL",
+    description:
+      "Regional freight and 3PL operator modernising a legacy operations stack.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 6,
+        summary: "Hiring 3 data engineers, no CDO or Head of Data on LinkedIn",
+        evidence:
+          "Two Senior Data Engineer and one Analytics Engineer roles posted in the last two weeks; no data-leadership title in the org chart.",
+        source: "Job-board API",
+        strength: 0.9,
+      },
+      {
+        type: "funding_ma",
+        daysAgo: 21,
+        summary: "Acquired a Midwest carrier, creating data integration work",
+        evidence:
+          "Press release announcing the acquisition of a 200-truck carrier; integration and consolidated reporting explicitly named as priorities.",
+        source: "Press release",
+        strength: 0.75,
+      },
+    ],
+    contacts: [
+      { name: "Dana Whitlock", title: "VP Operations", decisionMaker: true },
+      { name: "Marcus Reed", title: "Director of IT", decisionMaker: true },
+      { name: "Priya Anand", title: "Senior Data Engineer", emailStatus: "likely" },
+    ],
+  },
+  {
+    name: "Meridian Health Partners",
+    domain: "meridianhealth.example",
+    sector: "Healthcare",
+    employees: 1400,
+    location: "Nashville, TN",
+    description:
+      "Multi-site outpatient healthcare group with a budding analytics function.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 12,
+        summary: "New Chief Data Officer appointed 5 weeks ago",
+        evidence:
+          "Press release and LinkedIn announcement of a new CDO joining from a larger provider; first 90 days typically a partner-buying window.",
+        source: "Press release + licensed people data",
+        strength: 0.95,
+      },
+    ],
+    contacts: [
+      { name: "Elaine Foster", title: "Chief Data Officer", decisionMaker: true },
+      { name: "Tomás Iglesias", title: "Director, Clinical Analytics", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Copperfield Retail Group",
+    domain: "copperfieldretail.example",
+    sector: "Retail",
+    employees: 600,
+    location: "Columbus, OH",
+    description: "Regional omnichannel retailer with growing e-commerce volume.",
+    signals: [
+      {
+        type: "platform_adoption",
+        daysAgo: 9,
+        summary: "Job ads list Snowflake and dbt as required skills",
+        evidence:
+          "Four analytics roles in the last month require Snowflake and dbt; a partner announcement references a cloud data migration.",
+        source: "Job-board API + partner announcement",
+        strength: 0.8,
+      },
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 15,
+        summary: "Analytics hiring with no senior data leadership",
+        evidence:
+          "Hiring an Analytics Engineer and BI Developer; no Head of Data or CDO visible.",
+        source: "Job-board API",
+        strength: 0.7,
+      },
+    ],
+    contacts: [
+      { name: "Karen Osei", title: "VP Digital & E-commerce", decisionMaker: true },
+      { name: "Luis Mendez", title: "IT Director", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Bluepeak Financial",
+    domain: "bluepeakfin.example",
+    sector: "Financial services",
+    employees: 450,
+    location: "Austin, TX",
+    description: "Specialty lender modernising risk and reporting capabilities.",
+    signals: [
+      {
+        type: "public_rfp",
+        daysAgo: 4,
+        summary: "Public RFP for a cloud data warehouse and BI modernisation",
+        evidence:
+          "Procurement portal RFP #2026-114 seeking a partner for warehouse migration, semantic layer and regulatory reporting.",
+        source: "Public procurement portal",
+        sourceUrl: "https://procurement.example/rfp/2026-114",
+        strength: 0.95,
+      },
+    ],
+    contacts: [
+      { name: "Rachel Kim", title: "Chief Information Officer", decisionMaker: true },
+      { name: "Owen Bradley", title: "Head of Risk Analytics", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Summit Foods Co",
+    domain: "summitfoods.example",
+    sector: "Consumer goods",
+    employees: 1200,
+    location: "Denver, CO",
+    description: "Packaged-food manufacturer with a large distribution footprint.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 8,
+        summary: "Hiring a Head of Supply Chain Analytics, no data org in place",
+        evidence:
+          "Single senior analytics role posted into a function with no data team; classic greenfield build-out.",
+        source: "Job-board API",
+        strength: 0.8,
+      },
+    ],
+    contacts: [
+      { name: "Grace Lindqvist", title: "VP Supply Chain", decisionMaker: true },
+      { name: "Andre Cole", title: "Director of Finance Systems" },
+    ],
+  },
+  {
+    name: "Northgate Insurance",
+    domain: "northgateins.example",
+    sector: "Insurance",
+    employees: 900,
+    location: "Hartford, CT",
+    description: "Property & casualty carrier investing in underwriting analytics.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 18,
+        summary: "New VP of Data & Analytics hired from a peer carrier",
+        evidence:
+          "Leadership page updated and announcement post; mandate to consolidate warehouses and improve underwriting models.",
+        source: "Licensed people data + company site",
+        strength: 0.9,
+      },
+      {
+        type: "platform_adoption",
+        daysAgo: 30,
+        summary: "Moving to Databricks per job ads and a partner case study",
+        evidence:
+          "Three roles list Databricks; a platform partner published a case study naming Northgate.",
+        source: "Job-board API + partner case study",
+        strength: 0.65,
+      },
+    ],
+    contacts: [
+      { name: "Helen Marsh", title: "VP Data & Analytics", decisionMaker: true },
+      { name: "Victor Nguyen", title: "Chief Underwriting Officer", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Vantage Manufacturing",
+    domain: "vantagemfg.example",
+    sector: "Industrials",
+    employees: 700,
+    location: "Detroit, MI",
+    description: "Precision-components manufacturer digitising plant operations.",
+    signals: [
+      {
+        type: "funding_ma",
+        daysAgo: 14,
+        summary: "Closed a growth round to fund Industry 4.0 programme",
+        evidence:
+          "Announced a $40M growth investment naming plant analytics and IoT data as a use of funds.",
+        source: "Press release",
+        strength: 0.85,
+      },
+    ],
+    contacts: [
+      { name: "Peter Kowalski", title: "COO", decisionMaker: true },
+      { name: "Sofia Alvarez", title: "Head of Digital Transformation", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Larkspur Biotech",
+    domain: "larkspurbio.example",
+    sector: "Biotech",
+    employees: 320,
+    location: "Boston, MA",
+    description: "Clinical-stage biotech scaling R&D data operations.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 25,
+        summary: "First Head of Data Science appointed",
+        evidence:
+          "New role announced; remit spans data platform, analytics and ML for discovery.",
+        source: "Licensed people data",
+        strength: 0.85,
+      },
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 5,
+        summary: "Hiring a Data Platform Engineer",
+        evidence: "One Senior Data Platform Engineer role posted.",
+        source: "Job-board API",
+        strength: 0.6,
+      },
+    ],
+    contacts: [
+      { name: "Dr. Nadia Rahman", title: "Head of Data Science", decisionMaker: true },
+      { name: "Colin Walsh", title: "VP R&D Operations", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Riverstone Energy",
+    domain: "riverstoneenergy.example",
+    sector: "Energy",
+    employees: 1100,
+    location: "Houston, TX",
+    description: "Midstream energy operator modernising asset analytics.",
+    signals: [
+      {
+        type: "public_rfp",
+        daysAgo: 11,
+        summary: "Tender for an enterprise data platform and analytics partner",
+        evidence:
+          "Tender references data ingestion from SCADA systems, a lakehouse and executive dashboards.",
+        source: "Public tender portal",
+        sourceUrl: "https://tenders.example/riverstone/data",
+        strength: 0.9,
+      },
+      {
+        type: "platform_adoption",
+        daysAgo: 40,
+        summary: "Databricks named in a conference talk",
+        evidence:
+          "Two engineers presented a Databricks pilot at an industry meetup.",
+        source: "Conference listing",
+        strength: 0.55,
+      },
+    ],
+    contacts: [
+      { name: "Robert Hale", title: "CIO", decisionMaker: true },
+      { name: "Mei Chen", title: "Director of Data Engineering", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Cascade Utilities",
+    domain: "cascadeutilities.example",
+    sector: "Utilities",
+    employees: 1500,
+    location: "Portland, OR",
+    description: "Regional utility investing in grid and customer analytics.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 10,
+        summary: "Three analytics roles, no standing data leadership",
+        evidence:
+          "Hiring BI and data engineering staff into IT with no CDO; board papers mention an analytics gap.",
+        source: "Job-board API + board minutes",
+        strength: 0.8,
+      },
+    ],
+    contacts: [
+      { name: "Alice Boyer", title: "Deputy CIO", decisionMaker: true },
+      { name: "Jamal Wright", title: "Manager, Grid Analytics" },
+    ],
+  },
+  {
+    name: "Brightpath Education",
+    domain: "brightpathed.example",
+    sector: "Education technology",
+    employees: 380,
+    location: "Seattle, WA",
+    description: "Digital curriculum provider scaling its product analytics.",
+    signals: [
+      {
+        type: "funding_ma",
+        daysAgo: 7,
+        summary: "Raised a $28M Series C",
+        evidence:
+          "Funding announcement names data platform and AI personalisation as priorities.",
+        source: "Press release",
+        strength: 0.8,
+      },
+    ],
+    contacts: [
+      { name: "Nicole Barnes", title: "VP Product", decisionMaker: true },
+      { name: "Sam Okafor", title: "Head of Engineering", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Ironclad Security",
+    domain: "ironcladsec.example",
+    sector: "Cybersecurity",
+    employees: 260,
+    location: "Denver, CO",
+    description: "Managed security provider building a data-driven SOC.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 19,
+        summary: "Hiring a data engineer for the SOC",
+        evidence:
+          "Role focuses on telemetry pipelines and detection analytics; no data leadership present.",
+        source: "Job-board API",
+        strength: 0.7,
+      },
+    ],
+    contacts: [
+      { name: "Diego Santos", title: "VP Security Operations", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Palmetto Healthcare",
+    domain: "palmettohc.example",
+    sector: "Healthcare",
+    employees: 700,
+    location: "Charleston, SC",
+    description: "Community health system exploring population-health analytics.",
+    signals: [
+      {
+        type: "public_rfp",
+        daysAgo: 16,
+        summary: "RFP for population-health data platform",
+        evidence:
+          "RFP seeks a partner for a clinical data warehouse and risk-stratification models.",
+        source: "Public procurement portal",
+        strength: 0.85,
+      },
+    ],
+    contacts: [
+      { name: "Brenda Sinclair", title: "Chief Medical Information Officer", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Foxglove Media",
+    domain: "foxglovemedia.example",
+    sector: "Media",
+    employees: 500,
+    location: "New York, NY",
+    description: "Digital publisher monetising audience data.",
+    signals: [
+      {
+        type: "platform_adoption",
+        daysAgo: 22,
+        summary: "Migrating analytics to a modern warehouse",
+        evidence:
+          "Job ads reference Snowflake and a modern BI stack; a trade article describes the migration.",
+        source: "Job-board API + trade press",
+        strength: 0.65,
+      },
+    ],
+    contacts: [
+      { name: "Yuki Tanaka", title: "VP Audience & Data", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Redwood Payments",
+    domain: "redwoodpay.example",
+    sector: "Fintech",
+    employees: 300,
+    location: "San Francisco, CA",
+    description: "Payments platform scaling fraud and risk analytics.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 3,
+        summary: "New Head of Data hired, first 90 days",
+        evidence:
+          "Announced this week; remit includes a data platform rebuild and ML risk models.",
+        source: "Licensed people data + LinkedIn post",
+        strength: 0.95,
+      },
+    ],
+    contacts: [
+      { name: "Aisha Bello", title: "Head of Data", decisionMaker: true },
+      { name: "Grant Fisher", title: "VP Risk", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Great Lakes Freight",
+    domain: "greatlakesfreight.example",
+    sector: "Logistics",
+    employees: 950,
+    location: "Cleveland, OH",
+    description: "Intermodal freight company merging two operating systems.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 13,
+        summary: "Data engineering hiring, no CDO",
+        evidence: "Two data engineering roles open; no data leadership listed.",
+        source: "Job-board API",
+        strength: 0.75,
+      },
+      {
+        type: "funding_ma",
+        daysAgo: 33,
+        summary: "Merged with a rail-partner operator",
+        evidence: "Merger press release cites system integration as a priority.",
+        source: "Press release",
+        strength: 0.7,
+      },
+    ],
+    contacts: [
+      { name: "Walter Simmons", title: "COO", decisionMaker: true },
+      { name: "Ines Duarte", title: "IT Director", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Silver Creek Hospitality",
+    domain: "silvercreekhosp.example",
+    sector: "Hospitality",
+    employees: 1600,
+    location: "Phoenix, AZ",
+    description: "Hotel group consolidating revenue and guest analytics.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 27,
+        summary: "Hiring a revenue-analytics manager",
+        evidence: "Role requires building reporting from scratch across properties.",
+        source: "Job-board API",
+        strength: 0.65,
+      },
+    ],
+    contacts: [
+      { name: "Paula Grant", title: "VP Revenue Management", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Beacon Legal Group",
+    domain: "beaconlegal.example",
+    sector: "Legal services",
+    employees: 400,
+    location: "Dallas, TX",
+    description: "Law firm investing in matter and pricing analytics.",
+    signals: [
+      {
+        type: "platform_adoption",
+        daysAgo: 34,
+        summary: "Adopting a modern BI stack",
+        evidence:
+          "A job ad references Power BI migration to a cloud warehouse; firm blog announces a data initiative.",
+        source: "Job-board API + firm blog",
+        strength: 0.6,
+      },
+    ],
+    contacts: [
+      { name: "Harold Finch", title: "Chief Operating Officer", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Tidewater Marine",
+    domain: "tidewatermarine.example",
+    sector: "Maritime",
+    employees: 620,
+    location: "Norfolk, VA",
+    description: "Marine services operator with heavy sensor data.",
+    signals: [
+      {
+        type: "funding_ma",
+        daysAgo: 9,
+        summary: "Acquired a fleet-monitoring startup",
+        evidence:
+          "Acquisition brings IoT sensor data that needs integrating with ops reporting.",
+        source: "Press release",
+        strength: 0.8,
+      },
+    ],
+    contacts: [
+      { name: "Fiona Clark", title: "Head of Fleet Operations", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Orchid Cosmetics",
+    domain: "orchidcosmetics.example",
+    sector: "Beauty",
+    employees: 480,
+    location: "Los Angeles, CA",
+    description: "DTC beauty brand scaling customer analytics.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 20,
+        summary: "First Director of Analytics appointed",
+        evidence:
+          "New hire announced; remit covers marketing analytics and retention modelling.",
+        source: "Licensed people data",
+        strength: 0.85,
+      },
+    ],
+    contacts: [
+      { name: "Isabella Moreau", title: "Director of Analytics", decisionMaker: true },
+      { name: "Ryan Patel", title: "VP Growth", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Trailhead Outdoor",
+    domain: "trailheadoutdoor.example",
+    sector: "Consumer goods",
+    employees: 350,
+    location: "Boulder, CO",
+    description: "Outdoor-equipment brand building a data function.",
+    signals: [
+      {
+        type: "data_hiring_no_leadership",
+        daysAgo: 2,
+        summary: "Hiring an Analytics Engineer",
+        evidence: "First data hire; role reports into finance.",
+        source: "Job-board API",
+        strength: 0.7,
+      },
+    ],
+    contacts: [
+      { name: "Chloe Bennett", title: "CFO", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Pinnacle Aerospace",
+    domain: "pinnacleaero.example",
+    sector: "Aerospace",
+    employees: 1250,
+    location: "Wichita, KS",
+    description: "Aerostructures supplier modernising quality analytics.",
+    signals: [
+      {
+        type: "public_rfp",
+        daysAgo: 15,
+        summary: "RFP for a manufacturing analytics platform",
+        evidence:
+          "Tender covers sensor ingestion, quality analytics and a governance framework.",
+        source: "Public procurement portal",
+        strength: 0.85,
+      },
+      {
+        type: "platform_adoption",
+        daysAgo: 28,
+        summary: "References a lakehouse in partner materials",
+        evidence: "A platform partner lists Pinnacle in a manufacturing case study.",
+        source: "Partner case study",
+        strength: 0.6,
+      },
+    ],
+    contacts: [
+      { name: "Gregory Nolan", title: "VP Quality", decisionMaker: true },
+      { name: "Amara Diallo", title: "Director of Manufacturing Systems", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Whitfield Pharma",
+    domain: "whitfieldpharma.example",
+    sector: "Pharmaceuticals",
+    employees: 800,
+    location: "Raleigh, NC",
+    description: "Specialty pharma consolidating commercial analytics.",
+    signals: [
+      {
+        type: "funding_ma",
+        daysAgo: 24,
+        summary: "Acquired a portfolio from a larger group",
+        evidence:
+          "Deal press release notes integration of commercial and supply data.",
+        source: "Press release",
+        strength: 0.75,
+      },
+    ],
+    contacts: [
+      { name: "Teresa Voss", title: "VP Commercial Operations", decisionMaker: true },
+    ],
+  },
+  {
+    name: "Cobalt Robotics Mfg",
+    domain: "cobaltrobotics.example",
+    sector: "Robotics",
+    employees: 540,
+    location: "Pittsburgh, PA",
+    description: "Industrial robotics maker scaling fleet telemetry.",
+    signals: [
+      {
+        type: "new_data_leader",
+        daysAgo: 17,
+        summary: "New VP of Data Platform hired",
+        evidence:
+          "Announced hire; remit includes telemetry platform and ML for predictive maintenance.",
+        source: "Licensed people data",
+        strength: 0.9,
+      },
+      {
+        type: "funding_ma",
+        daysAgo: 6,
+        summary: "Raised a $55M Series D",
+        evidence: "Round named fleet data and AI as core investment areas.",
+        source: "Press release",
+        strength: 0.8,
+      },
+    ],
+    contacts: [
+      { name: "Ingrid Solberg", title: "VP Data Platform", decisionMaker: true },
+      { name: "Derrick Charles", title: "VP Engineering", decisionMaker: true },
+    ],
+  },
+];
