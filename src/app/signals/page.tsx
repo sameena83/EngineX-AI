@@ -14,7 +14,12 @@ import {
 import { employees } from "@/lib/format";
 import { detectedAgo, freshness, parseEvidence } from "@/lib/signals";
 import type { ScoredAccount, SignalType } from "@/lib/types";
+import { useUrlNumberParam, useUrlParamEnum } from "@/lib/use-url-params";
 import { useVocabulary } from "@/lib/use-vocabulary";
+
+/** The statuses this page can show, in one place so the URL cannot seed another. */
+const STATUS_FILTERS = ["new", "approved", "dismissed"] as const;
+type StatusFilter = (typeof STATUS_FILTERS)[number] | "all";
 
 /** Fit reads as a short badge so a mismatch is obvious before opening a card. */
 function FitChip({ fit }: { fit: ScoredAccount["fit"] }) {
@@ -34,10 +39,21 @@ export default function SignalsPage() {
   const [feed, setFeed] = useState<ScoredAccount[] | null>(null);
   const [excluded, setExcluded] = useState<ScoredAccount[]>([]);
   const [showExcluded, setShowExcluded] = useState(false);
-  const [minScore, setMinScore] = useState(0);
   const [type, setType] = useState<SignalType | "all">("all");
-  const [status, setStatus] = useState<"all" | "new" | "approved" | "dismissed">("all");
   const [busy, setBusy] = useState<number | null>(null);
+
+  // A dashboard tile links here pre-filtered ("Strong signals", "Approved
+  // accounts"), so the landing view is the one that was clicked. The URL seeds
+  // the filter and the reader's own choice overrides it, rather than the two
+  // fighting: `statusOverride` stays null until someone touches the control.
+  const urlStatus = useUrlParamEnum("status", STATUS_FILTERS);
+  const urlMinScore = useUrlNumberParam("minScore");
+  const [statusOverride, setStatusOverride] = useState<StatusFilter | null>(null);
+  const [minScoreOverride, setMinScoreOverride] = useState<number | null>(null);
+  const status: StatusFilter = statusOverride ?? urlStatus ?? "all";
+  const minScore = minScoreOverride ?? urlMinScore ?? 0;
+  const setStatus = setStatusOverride;
+  const setMinScore = setMinScoreOverride;
 
   const load = () =>
     fetch("/api/feed")

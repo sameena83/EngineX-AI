@@ -46,6 +46,9 @@ export default function DashboardPage() {
 
   const strong = feed?.filter((f) => f.score >= 60).length ?? 0;
   const approved = feed?.filter((f) => f.account.status === "approved").length ?? 0;
+  // Counted exactly as the tile's link filters, or the number and the list it
+  // opens disagree — "Drafts ready: 3" opening an empty view is worse than no tile.
+  const draftsReady = drafts.filter((d) => d.status === "draft").length;
 
   return (
     <div>
@@ -59,11 +62,38 @@ export default function DashboardPage() {
         }
       />
 
+      {/* Each tile opens the view it is counting, already filtered. A number a
+          reader cannot act on is a decoration; the link is what makes it a
+          control. */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Accounts tracked" value={feed?.length ?? "—"} tone="slate" />
-        <Stat label="Strong signals" value={feed ? strong : "—"} tone="sky" />
-        <Stat label="Approved accounts" value={feed ? approved : "—"} tone="emerald" />
-        <Stat label="Drafts ready" value={drafts.length} tone="amber" />
+        <Stat
+          label="Accounts tracked"
+          value={feed?.length ?? "—"}
+          tone="slate"
+          href="/signals"
+          hint="Everything in the feed"
+        />
+        <Stat
+          label="Strong signals"
+          value={feed ? strong : "—"}
+          tone="sky"
+          href="/signals?minScore=60"
+          hint="Score 60 and above"
+        />
+        <Stat
+          label="Approved accounts"
+          value={feed ? approved : "—"}
+          tone="emerald"
+          href="/signals?status=approved"
+          hint="Marked approved"
+        />
+        <Stat
+          label="Drafts ready"
+          value={draftsReady}
+          tone="amber"
+          href="/outreach?status=draft"
+          hint="Waiting to approve or send"
+        />
       </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-[1.4fr_1fr]">
@@ -208,10 +238,15 @@ function Stat({
   label,
   value,
   tone,
+  href,
+  hint,
 }: {
   label: string;
   value: number | string;
   tone: "slate" | "sky" | "emerald" | "amber";
+  /** Where the count lives, so the tile can open it filtered. */
+  href: string;
+  hint: string;
 }) {
   const tones: Record<string, string> = {
     slate: "text-slate-900",
@@ -220,9 +255,24 @@ function Stat({
     amber: "text-amber-700",
   };
   return (
-    <Card className="p-4">
-      <div className="text-xs font-medium text-slate-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</div>
-    </Card>
+    <Link
+      href={href}
+      title={`${label}: ${hint}`}
+      className="group block rounded-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-400"
+    >
+      <Card className="p-4 transition group-hover:border-slate-300 group-hover:shadow-md">
+        <div className="flex items-start justify-between gap-2">
+          <div className="text-xs font-medium text-slate-500">{label}</div>
+          <span
+            aria-hidden
+            className="text-xs text-slate-300 transition-colors group-hover:text-slate-900"
+          >
+            →
+          </span>
+        </div>
+        <div className={`mt-1 text-2xl font-semibold ${tones[tone]}`}>{value}</div>
+        <div className="mt-1 text-[11px] text-slate-400 group-hover:text-slate-500">{hint}</div>
+      </Card>
+    </Link>
   );
 }

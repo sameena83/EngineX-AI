@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Card, CopyButton, Empty, PageHeader, Spinner, StatusChip } from "@/components/ui";
 import type { Draft } from "@/lib/types";
+import { useUrlParamEnum } from "@/lib/use-url-params";
+
+/** The draft statuses this page can show, so a URL cannot seed another. */
+const OUTREACH_FILTERS = ["draft", "approved", "dismissed"] as const;
+type OutreachFilter = (typeof OUTREACH_FILTERS)[number] | "all";
 
 type DraftRow = Draft & { accountName: string; accountDomain: string };
 
@@ -15,7 +20,13 @@ const CHANNEL_LABEL: Record<Draft["channel"], string> = {
 
 export default function OutreachPage() {
   const [drafts, setDrafts] = useState<DraftRow[] | null>(null);
-  const [filter, setFilter] = useState<"all" | "draft" | "approved" | "dismissed">("all");
+
+  // "Drafts ready" on the dashboard links here filtered to drafts, so the count
+  // and the view it opens agree. The URL seeds it; touching the control overrides.
+  const urlFilter = useUrlParamEnum("status", OUTREACH_FILTERS);
+  const [filterOverride, setFilterOverride] = useState<OutreachFilter | null>(null);
+  const filter: OutreachFilter = filterOverride ?? urlFilter ?? "all";
+  const setFilter = setFilterOverride;
 
   useEffect(() => {
     fetch("/api/drafts")
