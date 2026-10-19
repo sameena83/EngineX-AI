@@ -228,11 +228,13 @@ never has to stand up an identity provider:
      workspace, sign-in is not used at all, and the server logs once that there is no per-user
      isolation. Without either, a production instance refuses every data request on purpose, and
      `/api/health` says which variable is missing.
-3. **`RESET_SECRET` and `INGEST_SECRET`** — these close the two endpoints a stranger must not be
+3. **`RESET_SECRET` and `INGEST_SECRET`** — these open the two endpoints a stranger must not be
    able to reach ([src/lib/guards.ts](src/lib/guards.ts)): unauthenticated `POST /api/reset` wipes
-   the workspace, and a pushed `candidates` body injects unverified items into the feed. With the
-   variable unset, both are refused in production and open in development. Neither is called by the
-   UI, so setting them costs nothing.
+   the workspace, and a pushed `candidates` body injects unverified items into the feed. Both are
+   **closed by default, in every environment** — an unset variable means a 503 that names the
+   variable, not an open endpoint. Neither is called by the UI, so setting them costs nothing. A
+   local demo that wants no secrets sets `ALLOW_UNGUARDED_DEMO=1`, which is ignored in production;
+   `/api/health` reports each endpoint as `secret`, `closed` or `open`.
 4. **`CRON_SECRET`** — required only if you use the scheduler. `POST /api/cron` accepts the secret as
    `x-cron-secret` or `Authorization: Bearer …`, and the Bearer form is what Vercel Cron sends, so
    [vercel.json](vercel.json) needs no other wiring. The endpoint decides for itself what is due
@@ -297,7 +299,7 @@ against a bundled sample feed, and a scheduled run pulls nothing rather than inv
 | --- | --- | --- | --- |
 | Webz.io News Search | `WEBZ_API_TOKEN` (+ `WEBZ_QUERIES`) | `news` | Press coverage for funding rounds, leadership changes and platform moves, attributed to a named company. Queries come from the niche config unless `WEBZ_QUERIES` overrides them |
 | Generic REST sources | `INGEST_HTTP_SOURCES` — a JSON array of endpoints (or the original single-endpoint `INGEST_HTTP_URL` + `INGEST_HTTP_TOKEN`, `INGEST_HTTP_CHANNEL`, `INGEST_HTTP_FIELD_MAP`, `INGEST_HTTP_ITEMS_PATH`) | Per endpoint: `channel`, default `job_board` | Any JSON API you have credentials for: job boards, ATS feeds, tender portals, people data. As many as you like, one channel each, all feeding the same run |
-| Push API | `INGEST_SECRET` (optional) | Per candidate, or all | Nothing — a scraper, spreadsheet script or Make/Zapier scenario posts candidates in |
+| Push API | `INGEST_SECRET` (required, or the endpoint refuses pushes) | Per candidate, or all | Nothing — a scraper, spreadsheet script or Make/Zapier scenario posts candidates in |
 | Bundled sample feed | — | All | Fixtures used by a dry run so the whole pipeline is exercisable offline |
 
 ### Evidence channels

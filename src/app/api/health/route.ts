@@ -19,7 +19,7 @@
 
 import { connection } from "next/server";
 import { configuredProvider } from "@/lib/email";
-import { INGEST_PUSH_GUARD, RESET_GUARD, guardConfigured } from "@/lib/guards";
+import { INGEST_PUSH_GUARD, RESET_GUARD, accessMode } from "@/lib/guards";
 import { llmProviderLabel } from "@/lib/llm";
 import { schemaVersion } from "@/lib/pg/migrations";
 import { getPool } from "@/lib/pg/pool";
@@ -78,17 +78,18 @@ export async function GET() {
           configured: sources.filter((s) => s.configured).map((s) => s.id),
           problems: sources.filter((s) => s.problem).map((s) => ({ id: s.id, problem: s.problem })),
         },
-        // Whether the destructive endpoints are closed. Read this when deciding
-        // if a deployment may be left on a public URL: a single-tenant install
-        // with neither guarded still lets anyone who finds the host wipe the
-        // workspace or inject signals.
+        // How the destructive endpoints are reachable. Read this when deciding
+        // if a deployment may be left on a public URL. "closed" is the safe
+        // default (no secret, so every call is refused); "secret" means one is
+        // required; "open" only ever appears when a local demo has opted in with
+        // ALLOW_UNGUARDED_DEMO=1, and never in production.
         access: {
           // "multi" means each signed-in user gets their own workspace; anything
           // else means every visitor who can reach this URL shares one, which is
           // only appropriate for a single customer or a development install.
           tenantIsolation: mode === "multi",
-          resetGuarded: guardConfigured(RESET_GUARD),
-          ingestPushGuarded: guardConfigured(INGEST_PUSH_GUARD),
+          reset: accessMode(RESET_GUARD),
+          ingestPush: accessMode(INGEST_PUSH_GUARD),
         },
       },
     },

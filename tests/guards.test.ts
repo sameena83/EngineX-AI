@@ -11,18 +11,35 @@ import { INGEST_PUSH_GUARD, RESET_GUARD, resolveGuard } from "../src/lib/guards"
 
 const base = { rule: RESET_GUARD, nodeEnv: "development" } as const;
 
-test("with no secret configured, development stays open and production refuses", () => {
-  assert.deepEqual(resolveGuard({ ...base, secret: null }), { ok: true });
+test("with no secret configured, every environment refuses", () => {
+  // The safe default. "Open in development" guessed where the code was running,
+  // and a pilot host behind a tunnel is not obviously not-production.
+  for (const nodeEnv of ["development", "test", "production", undefined]) {
+    const verdict = resolveGuard({ ...base, secret: null, nodeEnv });
+    assert.equal(verdict.ok, false, `${String(nodeEnv)} should refuse`);
+    if (verdict.ok) return;
+    assert.equal(verdict.status, 503);
+    assert.match(verdict.error, /RESET_SECRET/);
+    assert.match(verdict.error, /x-reset-secret/);
+  }
+
   // A blank variable is not a configured secret: it would otherwise read as
   // "protected" while accepting an empty header.
-  assert.deepEqual(resolveGuard({ ...base, secret: "   " }), { ok: true });
+  assert.equal(resolveGuard({ ...base, secret: "   " }).ok, false);
+});
 
-  const prod = resolveGuard({ ...base, secret: null, nodeEnv: "production" });
+test("the local demo opts in by name, and production ignores the opt-in", () => {
+  assert.deepEqual(resolveGuard({ ...base, secret: null, allowUnguarded: true }), { ok: true });
+  // One stray variable must not reopen a public host.
+  const prod = resolveGuard({
+    ...base,
+    secret: null,
+    allowUnguarded: true,
+    nodeEnv: "production",
+  });
   assert.equal(prod.ok, false);
   if (prod.ok) return;
   assert.equal(prod.status, 503);
-  assert.match(prod.error, /RESET_SECRET/);
-  assert.match(prod.error, /x-reset-secret/);
 });
 
 test("a configured secret must be presented, in either accepted form", () => {
