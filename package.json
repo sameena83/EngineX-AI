@@ -9,7 +9,10 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test --import ./tests/register-hooks.mjs tests/*.test.ts",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "check": "npm run typecheck && npm run lint && npm test",
+    "db:start": "scripts/local-db.sh start",
+    "db:stop": "scripts/local-db.sh stop",
+    "db:status": "scripts/local-db.sh status"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.17",

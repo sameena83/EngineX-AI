@@ -120,12 +120,20 @@ Signals come from the **ingestion path** below; the sample market is only a star
 
 ```bash
 npm install
+npm run db:start   # the local Postgres this checkout expects (data/pg5433, port 5433)
 npm run dev        # http://localhost:3000
 ```
 
-Storage is Postgres (`DATABASE_URL`); the schema is applied automatically on first use and the
-sample market is seeded per tenant, so a fresh database needs no manual setup. To reset one
-tenant's workspace, `POST /api/reset` — it keeps that tenant's niche and re-seeds the market.
+`npm run db:start` needs the host's own Postgres binaries (`brew install postgresql@16`, or your
+distro's package); `npm run db:stop` and `npm run db:status` are the other two, and creating the
+cluster the first time is part of `start`. Point `DATABASE_URL` at any other Postgres and the script
+is irrelevant — nothing in the app knows which one it is talking to.
+
+Storage is Postgres (`DATABASE_URL`); the schema is applied automatically on first use, and the
+sample market is seeded per tenant, so a fresh database needs no manual setup. To reset one tenant's
+workspace, `POST /api/reset` — it keeps that tenant's niche and re-seeds the market. `GET /api/health`
+answers 503 rather than 200 when the database is unreachable, which is the difference between "the
+host is down" and "the app is broken" when something stops working.
 
 ### Who a request belongs to
 
