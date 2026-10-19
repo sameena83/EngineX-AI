@@ -127,41 +127,66 @@ Storage is Postgres (`DATABASE_URL`); the schema is applied automatically on fir
 sample market is seeded per tenant, so a fresh database needs no manual setup. To reset one
 tenant's workspace, `POST /api/reset` — it keeps that tenant's niche and re-seeds the market.
 
-### Deploying
+### Who a request belongs to
 
-The app is multi-tenant: with `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` set, each
-signed-in user works in their own workspace, mapped through the `members` table. Until that
-identity adapter is wired, a request with no identity is resolved by one rule
-([src/lib/tenant.ts](src/lib/tenant.ts), `resolveFallbackTenant`):
+One function decides it ([src/lib/tenant.ts](src/lib/tenant.ts), `resolveTenantDecision`), in this
+order:
 
-- **`SINGLE_TENANT_SLUG=acme`** — this deployment serves that one workspace, in any environment. It
-  is created and seeded on first use, and the server logs once, loudly, that every request shares
-  it. That is what makes `npm run build && npm start` possible for a single customer or your own
-  install before Clerk is configured.
-- **Keys set, but no session resolved** — the app refuses, in every environment. The user-resolving
-  adapter is not implemented yet, so `CLERK_*` present with no signed-in user is a half-configured
-  deployment; falling back there would serve one workspace to everyone while the operator believes
-  sign-in is enforced. Unset the `CLERK_*` variables to run locally, or name a workspace.
-- **Neither set, in production** — the app refuses: data requests fail with a message naming both
-  ways out, rather than quietly handing one workspace to every visitor.
-- **Neither set, in development** — the seeded `DEV_TENANT_SLUG` workspace (default `dev`), so the
+- **`SINGLE_TENANT_SLUG=acme`** — this deployment serves that one workspace, in any environment,
+  with sign-in unused. It is the first thing checked and it outranks a session, which is what makes
+  `npm run build && npm start` possible for a single customer or your own install.
+- **a session resolved** — that user's workspace, through `members`. This is the multi-tenant case,
+  and it is what a deployment does once `CLERK_SECRET_KEY` and
+  `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` are set.
+- **keys set, but no session on this request** — refused, in every environment. Falling back would
+  serve one workspace to everyone while the operator believes sign-in is enforced. A signed-out
+  visitor is sent to `/sign-in` by the proxy; an API caller gets a 401.
+- **neither set, in production** — refused: data requests fail with a message naming both ways out,
+  rather than quietly handing one workspace to every visitor.
+- **neither set, in development** — the seeded `DEV_TENANT_SLUG` workspace (default `dev`), so the
   app runs with no configuration at all.
 
-Note that the identity adapter is not implemented yet: `currentUserId()` returns null even with Clerk
-keys present, so configuring Clerk alone does not yet give you per-user isolation.
+### Multi-tenancy
+
+One deployment serves many consultancies. The identity provider is Clerk, and the mapping between a
+person and a workspace is one row in `members`:
+
+- A signed-in request is resolved to a tenant id by [src/lib/tenant.ts](src/lib/tenant.ts)
+  (`currentTenantId`) — the only place that decides it.
+- A user who has no `members` row yet gets a workspace created on their first request, named from
+  their profile and seeded with the sample market, so the app is never empty on arrival.
+- Everything downstream takes that tenant id as a required argument
+  ([src/lib/db.ts](src/lib/db.ts)), so no route, query or filter can reach another customer's rows
+  by omission. Two signed-in users see two different workspaces out of one database.
+- `src/proxy.ts` is Clerk's middleware plus a sign-in gate: a signed-out visitor is redirected to
+  `/sign-in` rather than shown a page that cannot load, and a signed-out API call gets a 401 rather
+  than a 500. It is not the authorization layer — the tenant id is.
+- The scheduler runs every workspace: `POST /api/cron` with `CRON_SECRET` and no `tenantId` walks
+  all tenants and reports per-tenant failures, so one customer's broken webhook cannot stop
+  another's digest.
+
+`GET /api/health` reports which of these a deployment is doing: `workspace.mode` is `multi` when each
+user gets their own workspace, `single` when `SINGLE_TENANT_SLUG` names one, and `refuse` when the
+instance is misconfigured (in which case it also carries the reason).
 
 ### Deploying this app
 
-A production deployment today is **one workspace on a public URL**, so the job is: give it a
-database, name the workspace, and close the two endpoints that must not be open.
+A production deployment needs a database, an answer to "who is this user?", and the two destructive
+endpoints closed. There are two supported shapes, and the second exists so a single-customer install
+never has to stand up an identity provider:
 
 1. **A Postgres database** — any Postgres works. Create it, then set `DATABASE_URL` on the host. The
    schema is applied on the first request (migrations are serialised with an advisory lock, so two
-   instances starting together cannot double-apply), and the workspace is seeded on first use, so
+   instances starting together cannot double-apply), and a workspace is seeded on first use, so
    there is no separate migrate step to run before the app will answer.
-2. **`SINGLE_TENANT_SLUG`** — name the workspace this deployment serves (e.g. `acme`). Without it,
-   or Clerk keys, a production instance refuses every data request on purpose; `/api/health`
-   reports that as a 503 with the reason.
+2. **Identify users — pick one.**
+   - **Multi-tenant (recommended):** set `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`.
+     Each signed-in user gets their own workspace. Add the deployment's domain to the instance's
+     allowed origins (and `http://localhost:3403` for local work) in the Clerk dashboard.
+   - **Single workspace:** set `SINGLE_TENANT_SLUG=acme`. Every request is served that one
+     workspace, sign-in is not used at all, and the server logs once that there is no per-user
+     isolation. Without either, a production instance refuses every data request on purpose, and
+     `/api/health` says which variable is missing.
 3. **`RESET_SECRET` and `INGEST_SECRET`** — these close the two endpoints a stranger must not be
    able to reach ([src/lib/guards.ts](src/lib/guards.ts)): unauthenticated `POST /api/reset` wipes
    the workspace, and a pushed `candidates` body injects unverified items into the feed. With the

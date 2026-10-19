@@ -138,6 +138,18 @@ export async function listMembers(tenantId: number): Promise<Member[]> {
   return rows.map(mapMember);
 }
 
+/**
+ * Every workspace on the deployment.
+ *
+ * Only the scheduler wants this: a cron run needs to visit each customer's
+ * workspace, because midnight for one is midnight for all. Everything a request
+ * does stays scoped to the one tenant it resolved (see ./tenant.ts).
+ */
+export async function listTenants(): Promise<Tenant[]> {
+  const rows = await q("SELECT * FROM tenants ORDER BY id");
+  return rows.map(mapTenant);
+}
+
 /** Tenants a user can open. Used to pick the active workspace after sign-in. */
 export async function tenantsForUser(userId: string): Promise<Tenant[]> {
   const rows = await q(
@@ -160,7 +172,10 @@ export async function upsertMember(input: {
     `INSERT INTO members (tenant_id, user_id, email, role)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (tenant_id, user_id) DO UPDATE SET
-       email = excluded.email,
+       -- Keep a known address when the provider stops returning one: the session
+       -- token only carries an email when the JWT template includes it, so a
+       -- null here is "not sent", not "cleared".
+       email = COALESCE(excluded.email, members.email),
        role = excluded.role
      RETURNING *`,
     [input.tenantId, input.userId, input.email, input.role ?? "owner"],

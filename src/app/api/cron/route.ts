@@ -5,6 +5,7 @@ import {
   getVocabulary,
   listAccounts,
   listSignals,
+  listTenants,
   setState,
 } from "@/lib/db";
 import { runIngestion } from "@/lib/ingest";
@@ -16,6 +17,7 @@ import {
   type DispatchResult,
 } from "@/lib/integrations";
 import { buildFeed } from "@/lib/signals";
+import { errorResponse } from "@/lib/errors";
 import { currentTenantId } from "@/lib/tenant";
 import type { Profile } from "@/lib/types";
 
@@ -30,15 +32,21 @@ import type { Profile } from "@/lib/types";
 // It also pulls new signals first when a source is configured, so the digest is
 // built from the current market rather than the last thing a human typed in.
 //
-// POST /api/cron                  → the caller's tenant, running only what is due
-// POST /api/cron?force=1          → ignores the schedule (for testing)
-// POST /api/cron?tenantId=7       → a specific tenant, for a scheduler. Requires
-//                                   CRON_SECRET to be set, so an unauthenticated
-//                                   caller can never run another tenant's job.
-// Header x-cron-secret must match CRON_SECRET when that env var is set.
+// Three ways in, and the difference matters once more than one customer shares a
+// deployment:
 //
-// A production scheduler should iterate every due tenant and call this once per
-// tenant; per-tenant schedules and a run-log table land with the scale phase.
+//   POST /api/cron                 → the signed-in user's own workspace, running
+//                                    only what is due. This is the /integrations
+//                                    "Run now" button.
+//   POST /api/cron?tenantId=7      → one named workspace. Requires CRON_SECRET.
+//   POST /api/cron  (with secret)  → every workspace, because a scheduler fires
+//                                    once and midnight is midnight for all of
+//                                    them. Requires CRON_SECRET, so an
+//                                    anonymous caller can never walk the
+//                                    customer list.
+//
+// Header x-cron-secret must match CRON_SECRET when that env var is set; the
+// Bearer form is what Vercel Cron sends.
 
 const HOUR = 3_600_000;
 
@@ -53,36 +61,33 @@ function digestIsDue(
   return cadence === "daily" ? age >= 20 * HOUR : age >= 6 * 24 * HOUR;
 }
 
-function authorised(request: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
-  // Accept both a plain header (crontab/curl) and the Bearer form Vercel Cron sends.
-  if (request.headers.get("x-cron-secret") === secret) return true;
-  return request.headers.get("authorization") === `Bearer ${secret}`;
-}
-
 /**
- * Which tenant this run is for. An explicit tenantId is only honoured when a
- * cron secret is configured and presented, so the scheduler path cannot be used
- * to run another customer's job without the secret.
+ * Whether the caller presented the cron secret.
+ *
+ * Distinct from "may this request proceed": a signed-in user running their own
+ * workspace is legitimate without it (see POST below), but only this bit decides
+ * whether the request may name a tenant or walk all of them.
  */
-async function resolveTenant(request: Request): Promise<number> {
-  const requested = Number(new URL(request.url).searchParams.get("tenantId"));
-  if (process.env.CRON_SECRET && Number.isFinite(requested) && requested > 0) {
-    return requested;
-  }
-  return currentTenantId();
+function presentedSecret(request: Request): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  return (
+    request.headers.get("x-cron-secret") === secret ||
+    request.headers.get("authorization") === `Bearer ${secret}`
+  );
 }
 
-export async function POST(request: Request) {
-  if (!authorised(request)) {
-    return Response.json({ error: "Bad or missing x-cron-secret" }, { status: 401 });
-  }
+/** Whether a secret-shaped credential was offered and did not match. */
+function offeredWrongSecret(request: Request): boolean {
+  return Boolean(
+    process.env.CRON_SECRET &&
+      (request.headers.get("x-cron-secret") ?? request.headers.get("authorization")),
+  );
+}
 
-  const tenantId = await resolveTenant(request);
-  const force = new URL(request.url).searchParams.get("force") === "1";
+/** One workspace's scheduled run: pull first, then deliver what is due. */
+async function runForTenant(tenantId: number, force: boolean, now: number) {
   const profile = await getProfile(tenantId);
-  const now = Date.now();
 
   // Ingestion only runs for a real, configured source: a scheduled job must
   // never fill the workspace with sample data.
@@ -162,10 +167,10 @@ export async function POST(request: Request) {
     await setState(tenantId, "alerted_account_ids", JSON.stringify([...alreadyAlerted]));
   }
 
-  return Response.json({
+  return {
     ranAt: new Date(now).toISOString(),
     tenantId,
-    policy: profile.delivery,
+    cadence: profile.delivery.digestCadence,
     ingested,
     digest: {
       due: due || force,
@@ -179,5 +184,57 @@ export async function POST(request: Request) {
       sent: alertsSent,
     },
     results,
+  };
+}
+
+export async function POST(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const force = params.get("force") === "1";
+  const now = Date.now();
+
+  if (!presentedSecret(request)) {
+    if (offeredWrongSecret(request)) {
+      return Response.json({ error: "Bad or missing x-cron-secret" }, { status: 401 });
+    }
+    // No secret offered: this is the app's own button. It runs the caller's
+    // workspace and nothing else, so a signed-in user can never trigger another
+    // customer's digest — the tenant comes from the session, not the URL.
+    try {
+      const tenantId = await currentTenantId();
+      return Response.json(await runForTenant(tenantId, force, now));
+    } catch (err) {
+      return errorResponse(err);
+    }
+  }
+
+  const requested = Number(params.get("tenantId"));
+  if (Number.isFinite(requested) && requested > 0) {
+    return Response.json(await runForTenant(requested, force, now));
+  }
+
+  // The scheduler path: one call, every workspace. Failures are reported per
+  // tenant rather than aborting the run, because one customer's broken webhook
+  // must not stop everyone else's digest.
+  const tenants = await listTenants();
+  const runs = [];
+  for (const tenant of tenants) {
+    try {
+      runs.push({ slug: tenant.slug, ...(await runForTenant(tenant.id, force, now)) });
+    } catch (err) {
+      runs.push({
+        slug: tenant.slug,
+        tenantId: tenant.id,
+        error: err instanceof Error ? err.message : "run failed",
+      });
+    }
+  }
+
+  return Response.json({
+    ranAt: new Date(now).toISOString(),
+    tenants: runs.length,
+    delivered: runs.reduce((n, r) => n + ("digest" in r ? r.digest.delivered : 0), 0),
+    alertsSent: runs.reduce((n, r) => n + ("alerts" in r ? r.alerts.sent : 0), 0),
+    failures: runs.filter((r) => "error" in r).map((r) => ({ slug: r.slug, error: r.error })),
+    runs,
   });
 }

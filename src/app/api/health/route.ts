@@ -24,7 +24,7 @@ import { llmProviderLabel } from "@/lib/llm";
 import { schemaVersion } from "@/lib/pg/migrations";
 import { getPool } from "@/lib/pg/pool";
 import { hasPullSource, sourceStatuses } from "@/lib/sources";
-import { configuredTenant } from "@/lib/tenant";
+import { deploymentMode, deploymentRefusal, identityConfigured } from "@/lib/tenant";
 
 export async function GET() {
   await connection();
@@ -40,8 +40,13 @@ export async function GET() {
     databaseError = err instanceof Error ? err.message : "unreachable";
   }
 
-  const tenant = configuredTenant();
-  const workspaceOk = tenant.kind !== "refuse";
+  // Which workspace system this deployment runs. "multi" is healthy — each
+  // request is served the signed-in user's own workspace, and a probe has no
+  // session, so it sees the mode rather than a workspace. "refuse" is the
+  // misconfiguration the rest of the app reports as a 5xx, surfaced here instead.
+  const mode = deploymentMode();
+  const refusal = mode === "refuse" ? deploymentRefusal() : null;
+  const workspaceOk = mode !== "refuse";
 
   const sources = sourceStatuses();
   const ok = databaseOk && workspaceOk;
@@ -55,10 +60,17 @@ export async function GET() {
           schemaVersion: schema,
           error: databaseError,
         },
-        workspace:
-          tenant.kind === "refuse"
-            ? { ok: false, mode: "refuse", reason: tenant.reason }
-            : { ok: true, mode: tenant.kind, slug: tenant.slug },
+        workspace: workspaceOk
+          ? {
+              ok: true,
+              mode,
+              slug: mode === "single" ? (process.env.SINGLE_TENANT_SLUG ?? null) : null,
+            }
+          : { ok: false, mode, reason: refusal },
+        identity: {
+          configured: identityConfigured(),
+          provider: identityConfigured() ? "Clerk" : null,
+        },
         llm: { configured: llmProviderLabel() !== "Template engine", provider: llmProviderLabel() },
         email: { configured: configuredProvider() !== "dry-run", provider: configuredProvider() },
         sources: {
@@ -71,6 +83,10 @@ export async function GET() {
         // with neither guarded still lets anyone who finds the host wipe the
         // workspace or inject signals.
         access: {
+          // "multi" means each signed-in user gets their own workspace; anything
+          // else means every visitor who can reach this URL shares one, which is
+          // only appropriate for a single customer or a development install.
+          tenantIsolation: mode === "multi",
           resetGuarded: guardConfigured(RESET_GUARD),
           ingestPushGuarded: guardConfigured(INGEST_PUSH_GUARD),
         },

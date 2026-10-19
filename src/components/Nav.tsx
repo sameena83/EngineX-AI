@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import { useVocabulary } from "@/lib/use-vocabulary";
 
 const LINKS = [
@@ -15,9 +16,16 @@ const LINKS = [
   { href: "/profile", label: "Profile & niche", icon: "⚙" },
 ];
 
-export function Nav() {
+const AUTH_PATHS = ["/sign-in", "/sign-up"];
+
+export function Nav({ identityEnabled = false }: { identityEnabled?: boolean }) {
   const pathname = usePathname();
   const data = useVocabulary();
+
+  // The sign-in and sign-up pages stand on their own: the workspace links here
+  // would only 401 for a visitor who has no session yet.
+  if (AUTH_PATHS.some((p) => pathname.startsWith(p))) return null;
+
   return (
     <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-slate-200 bg-white px-4 py-6 md:flex">
       <div className="mb-8 px-2">
@@ -51,6 +59,21 @@ export function Nav() {
           );
         })}
       </nav>
+      {/* Who is signed in decides whose workspace this is, so it belongs in the
+          chrome: one deployment, many customers, and this is the only place that
+          says which one you are looking at. */}
+      {identityEnabled ? (
+        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2">
+          <SignedIn>
+            <UserButton showName />
+          </SignedIn>
+          <SignedOut>
+            <SignInButton mode="modal">
+              <button className="text-sm font-medium text-slate-700">Sign in</button>
+            </SignInButton>
+          </SignedOut>
+        </div>
+      ) : null}
       {/* The niche is real workspace state, so it belongs in the chrome rather
           than in a hardcoded label: this is what tells a security practice that
           it is looking at security signals. */}

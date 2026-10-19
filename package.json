@@ -12,6 +12,7 @@
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.9.17",
     "next": "16.4.0",
     "pg": "^8.23.1",
     "react": "19.3.0",
