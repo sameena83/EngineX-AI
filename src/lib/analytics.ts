@@ -130,13 +130,16 @@ function isMilestone(kind: OutcomeKind): boolean {
  * Count accounts won, bucketed by when each account was *first* won — a won deal
  * belongs to the period it closed in, and double-logging it must not count twice.
  */
-export function computeWonAnalytics(
+export async function computeWonAnalytics(
+  tenantId: number,
   granularity: Granularity,
   now = new Date(),
-  outcomes = listOutcomes(),
-  contacted = contactedAccountIds(),
-): WonAnalytics {
-  const withDates = outcomes.map((o: Outcome & { accountName?: string }) => ({
+  outcomes?: (Outcome & { accountName?: string })[],
+  contacted?: Set<number>,
+): Promise<WonAnalytics> {
+  const allOutcomes = outcomes ?? (await listOutcomes(tenantId));
+  const contactedIds = contacted ?? (await contactedAccountIds(tenantId));
+  const withDates = allOutcomes.map((o: Outcome & { accountName?: string }) => ({
     ...o,
     at: new Date(o.occurredAt),
   }));
@@ -199,8 +202,10 @@ export function computeWonAnalytics(
       won: totalWon,
       meetings: new Set(withDates.filter((o) => isMilestone(o.kind)).map((o) => o.accountId)).size,
       replies: new Set(withDates.filter((o) => o.kind === "reply").map((o) => o.accountId)).size,
-      contacted: contacted.size,
-      winRate: contacted.size ? Math.round((totalWon / contacted.size) * 100) / 100 : 0,
+      contacted: contactedIds.size,
+      winRate: contactedIds.size
+        ? Math.round((totalWon / contactedIds.size) * 100) / 100
+        : 0,
     },
     current: {
       label: last?.label ?? "",
@@ -212,13 +217,17 @@ export function computeWonAnalytics(
   };
 }
 
-export function computeAllWonAnalytics(now = new Date()) {
-  const outcomes = listOutcomes();
-  const contacted = contactedAccountIds();
+export async function computeAllWonAnalytics(tenantId: number, now = new Date()) {
+  // Outcomes and contacted accounts are fetched once and shared by all three
+  // views, so switching granularity is pure computation on the client.
+  const [outcomes, contacted] = await Promise.all([
+    listOutcomes(tenantId),
+    contactedAccountIds(tenantId),
+  ]);
   const views: Record<Granularity, WonAnalytics> = {
-    weekly: computeWonAnalytics("weekly", now, outcomes, contacted),
-    monthly: computeWonAnalytics("monthly", now, outcomes, contacted),
-    yearly: computeWonAnalytics("yearly", now, outcomes, contacted),
+    weekly: await computeWonAnalytics(tenantId, "weekly", now, outcomes, contacted),
+    monthly: await computeWonAnalytics(tenantId, "monthly", now, outcomes, contacted),
+    yearly: await computeWonAnalytics(tenantId, "yearly", now, outcomes, contacted),
   };
   return {
     ...views,

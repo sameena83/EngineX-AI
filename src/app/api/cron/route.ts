@@ -1,4 +1,12 @@
-import { getBriefForAccount, getProfile, getState, listAccounts, listSignals, setState } from "@/lib/db";
+import {
+  getBriefForAccount,
+  getProfile,
+  getState,
+  getVocabulary,
+  listAccounts,
+  listSignals,
+  setState,
+} from "@/lib/db";
 import { runIngestion } from "@/lib/ingest";
 import { hasPullSource } from "@/lib/sources";
 import {
@@ -8,12 +16,13 @@ import {
   type DispatchResult,
 } from "@/lib/integrations";
 import { buildFeed } from "@/lib/signals";
+import { currentTenantId } from "@/lib/tenant";
 import type { Profile } from "@/lib/types";
 
 // One endpoint does the scheduled delivery work, so it can be driven by whatever
 // scheduler you already have (system cron, Vercel Cron, a Make/Zapier schedule).
 //
-// It sends two different things, matching the report's Slack Phase 1:
+// It sends two different things:
 //   - the digest: a scheduled summary of the strongest accounts (weekly/daily)
 //   - strong-signal alerts: one card per account crossing the alert threshold,
 //     sent once per account so the channel isn't spammed
@@ -21,13 +30,23 @@ import type { Profile } from "@/lib/types";
 // It also pulls new signals first when a source is configured, so the digest is
 // built from the current market rather than the last thing a human typed in.
 //
-// POST /api/cron            → runs only what is due
-// POST /api/cron?force=1    → ignores the schedule (for testing)
+// POST /api/cron                  → the caller's tenant, running only what is due
+// POST /api/cron?force=1          → ignores the schedule (for testing)
+// POST /api/cron?tenantId=7       → a specific tenant, for a scheduler. Requires
+//                                   CRON_SECRET to be set, so an unauthenticated
+//                                   caller can never run another tenant's job.
 // Header x-cron-secret must match CRON_SECRET when that env var is set.
+//
+// A production scheduler should iterate every due tenant and call this once per
+// tenant; per-tenant schedules and a run-log table land with the scale phase.
 
 const HOUR = 3_600_000;
 
-function digestIsDue(cadence: Profile["delivery"]["digestCadence"], lastRun: string | null, now: number) {
+function digestIsDue(
+  cadence: Profile["delivery"]["digestCadence"],
+  lastRun: string | null,
+  now: number,
+) {
   if (cadence === "off") return false;
   if (!lastRun) return true;
   const age = now - new Date(lastRun).getTime();
@@ -42,13 +61,27 @@ function authorised(request: Request): boolean {
   return request.headers.get("authorization") === `Bearer ${secret}`;
 }
 
+/**
+ * Which tenant this run is for. An explicit tenantId is only honoured when a
+ * cron secret is configured and presented, so the scheduler path cannot be used
+ * to run another customer's job without the secret.
+ */
+async function resolveTenant(request: Request): Promise<number> {
+  const requested = Number(new URL(request.url).searchParams.get("tenantId"));
+  if (process.env.CRON_SECRET && Number.isFinite(requested) && requested > 0) {
+    return requested;
+  }
+  return currentTenantId();
+}
+
 export async function POST(request: Request) {
   if (!authorised(request)) {
     return Response.json({ error: "Bad or missing x-cron-secret" }, { status: 401 });
   }
 
+  const tenantId = await resolveTenant(request);
   const force = new URL(request.url).searchParams.get("force") === "1";
-  const profile = getProfile();
+  const profile = await getProfile(tenantId);
   const now = Date.now();
 
   // Ingestion only runs for a real, configured source: a scheduled job must
@@ -56,7 +89,7 @@ export async function POST(request: Request) {
   let ingested: { sources: number; accountsCreated: number; signalsAdded: number } | null = null;
   if (hasPullSource()) {
     try {
-      const report = await runIngestion({});
+      const report = await runIngestion(tenantId, {});
       ingested = {
         sources: report.sources.length,
         accountsCreated: report.accountsCreated,
@@ -68,14 +101,19 @@ export async function POST(request: Request) {
     }
   }
 
-  const feed = buildFeed(listAccounts(), listSignals(), now);
+  const [accounts, signals, vocabulary] = await Promise.all([
+    listAccounts(tenantId),
+    listSignals(tenantId),
+    getVocabulary(tenantId),
+  ]);
+  const feed = buildFeed(accounts, signals, vocabulary, profile, now);
 
   const results: DispatchResult[] = [];
   let digestAttempted = 0;
   let digestDelivered = 0;
 
   // --- scheduled digest -------------------------------------------------
-  const lastDigest = getState("last_digest_at");
+  const lastDigest = await getState(tenantId, "last_digest_at");
   const due = digestIsDue(profile.delivery.digestCadence, lastDigest, now);
   if (due || force) {
     const digest: DigestData = {
@@ -83,29 +121,37 @@ export async function POST(request: Request) {
       generatedAt: new Date(now).toISOString(),
       cadence: profile.delivery.digestCadence,
     };
-    const out = await dispatch("digest", digest);
+    const out = await dispatch(tenantId, "digest", digest);
     results.push(...out);
     digestAttempted = out.length;
     digestDelivered = out.filter((r) => r.ok).length;
     // Only advance the schedule if something actually landed, so a failure is
     // retried on the next run rather than silently skipped for a week.
-    if (digestDelivered > 0) setState("last_digest_at", new Date(now).toISOString());
+    if (digestDelivered > 0) {
+      await setState(tenantId, "last_digest_at", new Date(now).toISOString());
+    }
   }
 
   // --- strong-signal alerts --------------------------------------------
   let alertsSent = 0;
   if (profile.delivery.alertMinScore > 0) {
     const alreadyAlerted = new Set<number>(
-      JSON.parse(getState("alerted_account_ids") ?? "[]") as number[],
+      JSON.parse((await getState(tenantId, "alerted_account_ids")) ?? "[]") as number[],
     );
+    // Only alert on a genuine fit: an account outside the consultancy's market
+    // should not wake anyone up just because the signal was strong.
     const eligible = feed.filter(
-      (a) => a.score >= profile.delivery.alertMinScore && !alreadyAlerted.has(a.account.id),
+      (a) =>
+        a.fit.gate !== "out" &&
+        a.score >= profile.delivery.alertMinScore &&
+        !alreadyAlerted.has(a.account.id),
     );
     for (const scored of eligible) {
       const card = accountCardFromScored(scored);
-      const out = await dispatch("account_card", {
+      const brief = await getBriefForAccount(tenantId, scored.account.id);
+      const out = await dispatch(tenantId, "account_card", {
         ...card,
-        whyNow: getBriefForAccount(scored.account.id)?.whyNow,
+        whyNow: brief?.whyNow,
       });
       results.push(...out);
       if (out.some((r) => r.ok)) {
@@ -113,17 +159,18 @@ export async function POST(request: Request) {
         alertsSent += 1;
       }
     }
-    setState("alerted_account_ids", JSON.stringify([...alreadyAlerted]));
+    await setState(tenantId, "alerted_account_ids", JSON.stringify([...alreadyAlerted]));
   }
 
   return Response.json({
     ranAt: new Date(now).toISOString(),
+    tenantId,
     policy: profile.delivery,
     ingested,
     digest: {
       due: due || force,
       cadence: profile.delivery.digestCadence,
-      lastRunAt: getState("last_digest_at"),
+      lastRunAt: await getState(tenantId, "last_digest_at"),
       attempted: digestAttempted,
       delivered: digestDelivered,
     },

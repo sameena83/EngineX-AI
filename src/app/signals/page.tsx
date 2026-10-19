@@ -11,14 +11,29 @@ import {
   Spinner,
   StatusChip,
 } from "@/components/ui";
-import { employees, relativeDate, signalLabel } from "@/lib/format";
-import { SIGNAL_DEFINITIONS } from "@/lib/seed-data";
+import { employees } from "@/lib/format";
+import { detectedAgo, freshness, parseEvidence } from "@/lib/signals";
 import type { ScoredAccount, SignalType } from "@/lib/types";
+import { useVocabulary } from "@/lib/use-vocabulary";
 
-const SIGNAL_TYPES = Object.keys(SIGNAL_DEFINITIONS) as SignalType[];
+/** Fit reads as a short badge so a mismatch is obvious before opening a card. */
+function FitChip({ fit }: { fit: ScoredAccount["fit"] }) {
+  const [cls, label] =
+    fit.gate === "out"
+      ? ["bg-rose-100 text-rose-800", "Outside your market"]
+      : fit.gate === "in"
+        ? ["bg-emerald-100 text-emerald-800", "Fits your practice"]
+        : ["bg-amber-100 text-amber-800", "Partial fit"];
+  return <span className={`badge ${cls}`}>{label}</span>;
+}
 
 export default function SignalsPage() {
+  // The filter list is the tenant's own vocabulary: a security practice filters
+  // by "Compliance audit", not by five data & AI keys it does not track.
+  const vocab = useVocabulary();
   const [feed, setFeed] = useState<ScoredAccount[] | null>(null);
+  const [excluded, setExcluded] = useState<ScoredAccount[]>([]);
+  const [showExcluded, setShowExcluded] = useState(false);
   const [minScore, setMinScore] = useState(0);
   const [type, setType] = useState<SignalType | "all">("all");
   const [status, setStatus] = useState<"all" | "new" | "approved" | "dismissed">("all");
@@ -27,7 +42,10 @@ export default function SignalsPage() {
   const load = () =>
     fetch("/api/feed")
       .then((r) => r.json())
-      .then((d) => setFeed(d.feed));
+      .then((d) => {
+        setFeed(d.feed);
+        setExcluded(d.excluded ?? []);
+      });
 
   useEffect(() => {
     load();
@@ -64,7 +82,7 @@ export default function SignalsPage() {
     <div>
       <PageHeader
         title="Signal feed"
-        subtitle="Ranked by combined signal strength and recency. Approve the accounts you want to work; dismiss the rest."
+        subtitle="Ranked by evidence strength, recency and how well each account fits your target industries, size and services. Approve the accounts you want to work; dismiss the rest."
       />
 
       <Card className="mb-5 flex flex-wrap items-end gap-4 p-4">
@@ -89,9 +107,9 @@ export default function SignalsPage() {
               onChange={(e) => setType(e.target.value as SignalType | "all")}
             >
               <option value="all">All signals</option>
-              {SIGNAL_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {signalLabel(t)}
+              {(vocab?.vocabulary ?? []).map((d) => (
+                <option key={d.type} value={d.type}>
+                  {d.shortLabel}
                 </option>
               ))}
             </select>
@@ -136,26 +154,61 @@ export default function SignalsPage() {
                       {s.account.name}
                     </Link>
                     <StatusChip status={s.account.status} />
+                    <FitChip fit={s.fit} />
                   </div>
                   <div className="mt-0.5 text-xs text-slate-500">
                     {s.account.sector} · {employees(s.account.employees)} employees ·{" "}
                     {s.account.location} · {s.account.domain}
                   </div>
-                  <p className="mt-2 text-sm text-slate-600">{s.account.description}</p>
+                  {s.fit.summary ? (
+                    <div className="mt-1 text-[11px] text-slate-500">{s.fit.summary}</div>
+                  ) : null}
+
+                  {/* Why it ranks here, then what held it back — never a black box. */}
+                  {s.reasons.length > 0 || s.penalties.length > 0 ? (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-[11px] font-medium text-slate-500 hover:text-slate-800">
+                        Why this ranks here
+                      </summary>
+                      <ul className="mt-1 space-y-0.5">
+                        {s.reasons.map((r) => (
+                          <li key={r} className="text-[11px] text-emerald-700">+ {r}</li>
+                        ))}
+                        {s.penalties.map((p) => (
+                          <li key={p} className="text-[11px] text-amber-700">− {p}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
 
                   <ul className="mt-3 space-y-2">
-                    {s.signals.map((sig) => (
-                      <li key={sig.id} className="rounded-lg bg-slate-50 p-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <SignalChip type={sig.type} />
-                          <span className="text-xs text-slate-400">
-                            {relativeDate(sig.detectedAt)} · {sig.source}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-sm font-medium text-slate-800">{sig.summary}</div>
-                        <div className="text-xs text-slate-500">{sig.evidence}</div>
-                      </li>
-                    ))}
+                    {s.signals.map((sig) => {
+                      const parsed = parseEvidence(sig.evidence);
+                      return (
+                        <li key={sig.id} className="rounded-lg bg-slate-50 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <SignalChip type={sig.type} />
+                            <span className="text-xs text-slate-400">
+                              event {freshness(sig)} · detected {detectedAgo(sig)} · {sig.source}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-sm font-medium text-slate-800">
+                            {sig.summary}
+                          </div>
+                          <div className="text-xs text-slate-500">{parsed.text}</div>
+                          {sig.sourceUrl ? (
+                            <a
+                              href={sig.sourceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 inline-block text-[11px] text-slate-500 underline"
+                            >
+                              {sig.sourceUrl}
+                            </a>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
 
@@ -183,6 +236,53 @@ export default function SignalsPage() {
           ))}
         </div>
       )}
+
+      {/* Excluded accounts stay visible on request: hiding them silently would
+          make the ranking feel arbitrary. */}
+      {excluded.length > 0 ? (
+        <Card className="mt-5 p-4">
+          <button
+            className="flex w-full items-center justify-between text-left"
+            onClick={() => setShowExcluded((v) => !v)}
+          >
+            <span className="text-sm font-semibold text-slate-900">
+              {excluded.length} account{excluded.length === 1 ? "" : "s"} outside your market
+            </span>
+            <span className="text-xs text-slate-500">{showExcluded ? "Hide" : "Show"}</span>
+          </button>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Hidden from the feed because they fall outside both your target industries and your
+            size range — not because the evidence was weak.
+          </p>
+          {showExcluded ? (
+            <ul className="mt-3 space-y-2">
+              {excluded.map((s) => (
+                <li
+                  key={s.account.id}
+                  className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg border border-slate-200 p-3"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      href={`/accounts/${s.account.id}`}
+                      className="text-sm font-medium text-slate-800 hover:underline"
+                    >
+                      {s.account.name}
+                    </Link>
+                    <div className="text-[11px] text-slate-500">{s.fit.summary}</div>
+                    {s.fit.industry.reason ? (
+                      <div className="text-[11px] text-amber-700">− {s.fit.industry.reason}</div>
+                    ) : null}
+                    {s.fit.size.reason ? (
+                      <div className="text-[11px] text-amber-700">− {s.fit.size.reason}</div>
+                    ) : null}
+                  </div>
+                  <span className="text-xs text-slate-500">score {s.score}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </Card>
+      ) : null}
     </div>
   );
 }

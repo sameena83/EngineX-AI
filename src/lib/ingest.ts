@@ -13,7 +13,7 @@
 //   - re-polling a source is a no-op thanks to the signal dedupe key,
 //   - a source that errors is reported and skipped; the others still run.
 
-import { classify } from "./classify";
+import { classify, classifyWithRules, suppression } from "./classify";
 import {
   enrichAccount,
   insertAccount,
@@ -21,13 +21,19 @@ import {
   listAccounts,
   setState,
   getState,
+  getProfile,
+  getVocabulary,
 } from "./db";
 import { pullSources, sampleSource, type RawCandidate } from "./sources";
-import type { Signal, SignalType } from "./types";
+import type { Channel, NicheConfig, Signal, SignalType, Vocabulary } from "./types";
+import { channelLabel } from "./channels";
+import { vocabularyForChannel } from "./vocab";
 
 export interface IngestSourceResult {
   id: string;
   label: string;
+  /** Channels this source feeds. Null when it feeds all of them. */
+  channels: Channel[] | null;
   fetched: number;
   error: string | null;
 }
@@ -36,7 +42,15 @@ export interface IngestSample {
   accountName: string;
   type: SignalType | null;
   summary: string;
-  action: "added" | "duplicate" | "unclassified" | "unattributed";
+  action:
+    | "added"
+    | "duplicate"
+    | "unclassified"
+    | "unattributed"
+    | "suppressed"
+    | "off_channel";
+  /** Why an item was dropped, when it was dropped for a reason other than noise. */
+  note?: string;
   url: string | null;
 }
 
@@ -52,6 +66,18 @@ export interface IngestReport {
   duplicates: number;
   unclassified: number;
   unattributed: number;
+  /** Dropped by a negative rule — vendor marketing, awards, promotional filler. */
+  suppressed: number;
+  /**
+   * Items a rule matched but could not be counted for, because that rule does not
+   * read the channel the item arrived on.
+   *
+   * Counted separately from `unclassified` on purpose: "nothing we track" and "we
+   * track this, but not from here" are different problems, and the second is what
+   * tells a customer their configured sources do not cover the signals they asked
+   * for.
+   */
+  offChannel: number;
   samples: IngestSample[];
 }
 
@@ -85,16 +111,20 @@ function dedupeKey(accountId: number, type: SignalType, summary: string): string
   return `${accountId}|${type}|${text}`;
 }
 
-function detectedAt(postedAt: string | null | undefined, now: number): string {
+/**
+ * When the event happened. Falls back to now when the source gives no date, and
+ * clamps a future timestamp (sources do occasionally send one) to now so a bad
+ * date cannot make a stale event look fresh forever.
+ */
+function eventDate(postedAt: string | null | undefined, now: number): string {
   if (!postedAt) return new Date(now).toISOString();
   const ts = new Date(postedAt).getTime();
-  // Sources occasionally send a date in the future; clamp it to now.
   if (!Number.isFinite(ts) || ts > now) return new Date(now).toISOString();
   return new Date(ts).toISOString();
 }
 
-export function lastIngestReport(): IngestReport | null {
-  const raw = getState("last_ingest_report");
+export async function lastIngestReport(tenantId: number): Promise<IngestReport | null> {
+  const raw = await getState(tenantId, "last_ingest_report");
   if (!raw) return null;
   try {
     return JSON.parse(raw) as IngestReport;
@@ -122,17 +152,26 @@ export interface IngestOptions {
  * Run ingestion. Never throws: a failing source is reported alongside the ones
  * that worked, because a partly-successful run is still useful.
  */
-export async function runIngestion(options: IngestOptions = {}): Promise<IngestReport> {
+export async function runIngestion(
+  tenantId: number,
+  options: IngestOptions = {},
+): Promise<IngestReport> {
   const dryRun = options.dryRun ?? false;
   const now = Date.now();
   const pushed = options.pushed ?? [];
+
+  // The vocabulary and niche config are read once per run, not per candidate:
+  // classification is the hot path and these are the same for every item.
+  const profile = await getProfile(tenantId);
+  const vocabulary: Vocabulary = await getVocabulary(tenantId);
+  const config: NicheConfig = profile.nicheConfig;
 
   const adapters =
     dryRun
       ? [sampleSource()]
       : options.includePull === false
         ? []
-        : pullSources().filter(
+        : pullSources(config.sourceQueries).filter(
             (s) => !options.sourceIds?.length || options.sourceIds.includes(s.id),
           );
 
@@ -148,6 +187,8 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
     duplicates: 0,
     unclassified: 0,
     unattributed: 0,
+    suppressed: 0,
+    offChannel: 0,
     samples: [],
   };
 
@@ -158,6 +199,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
       report.sources.push({
         id: adapter.id,
         label: adapter.label,
+        channels: adapter.channels,
         fetched: fetched.length,
         error: null,
       });
@@ -167,6 +209,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
       report.sources.push({
         id: adapter.id,
         label: adapter.label,
+        channels: adapter.channels,
         fetched: 0,
         error: err instanceof Error ? err.message : "fetch failed",
       });
@@ -181,7 +224,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
   // stays O(1) per candidate no matter how many arrive.
   const byDomain = new Map<string, number>();
   const byName = new Map<string, number>();
-  for (const account of listAccounts()) {
+  for (const account of await listAccounts(tenantId)) {
     if (account.domain) byDomain.set(normaliseDomain(account.domain), account.id);
     byName.set(normaliseName(account.name), account.id);
   }
@@ -193,10 +236,60 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
       continue;
     }
 
+    // Negative rules first: a vendor's own launch announcement is noise whether
+    // or not it happens to contain a word we look for. Counting it separately
+    // from "unclassified" is what makes a mistuned keyword visible.
+    const veto = suppression(candidate.text, config);
+    if (veto) {
+      report.suppressed += 1;
+      pushSample(report, {
+        accountName: name,
+        type: null,
+        summary: candidate.text,
+        action: "suppressed",
+        note: `${veto.rule} ("${veto.phrase}")`,
+        url: candidate.url ?? null,
+      });
+      continue;
+    }
+
+    // Routing: only the rules that read this item's channel are run against it.
+    // A tender pattern matched against press coverage invents opportunities, and
+    // a hiring pattern says nothing unless it is looking at a job board.
+    const channel = candidate.channel ?? null;
+    const readable = vocabularyForChannel(vocabulary, channel);
+
     // Classify before touching the workspace: an item that is not evidence of a
     // tracked need must not create an account that then sits signal-less in the
     // feed. This is also what keeps an off-topic article from adding noise.
-    const result = await classify(candidate.text);
+    const result = readable.length
+      ? await classify(candidate.text, readable, config)
+      : null;
+
+    if (!result && channel && readable.length < vocabulary.length) {
+      // It may still have matched a rule that reads a different channel. Rules
+      // only, and only on the miss path: the explanation is worth a second local
+      // regex pass but never a second model call.
+      const elsewhere = classifyWithRules(
+        candidate.text,
+        vocabulary.filter((def) => !readable.includes(def)),
+      );
+      if (elsewhere) {
+        const def = vocabulary.find((d) => d.type === elsewhere.type);
+        const reads = def ? def.sources.map(channelLabel).join(" / ") : "another channel";
+        report.offChannel += 1;
+        pushSample(report, {
+          accountName: name,
+          type: null,
+          summary: candidate.text,
+          action: "off_channel",
+          note: `matches "${def?.label ?? elsewhere.type}", which reads ${reads} — this item arrived on ${channelLabel(channel)}`,
+          url: candidate.url ?? null,
+        });
+        continue;
+      }
+    }
+
     if (!result) {
       report.unclassified += 1;
       pushSample(report, {
@@ -218,7 +311,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
         accountId = -1;
         report.accountsCreated += 1;
       } else {
-        const account = insertAccount({
+        const account = await insertAccount(tenantId, {
           name,
           domain: domain || domainFrom(name),
           sector: candidate.sector?.trim() || "Unknown",
@@ -234,7 +327,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
     } else {
       report.accountsMatched += 1;
       if (!dryRun) {
-        enrichAccount(accountId, {
+        await enrichAccount(tenantId, accountId, {
           domain: domain || undefined,
           sector: candidate.sector ?? undefined,
           employees: candidate.employees ?? undefined,
@@ -254,7 +347,7 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
       continue;
     }
 
-    const signal: Signal | null = insertSignalIfNew({
+    const signal: Signal | null = await insertSignalIfNew(tenantId, {
       accountId,
       type: candidate.hint ?? result.type,
       summary: result.summary,
@@ -263,7 +356,10 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
         : candidate.text,
       source: candidate.source,
       sourceUrl: candidate.url ?? null,
-      detectedAt: detectedAt(candidate.postedAt, now),
+      // Two different facts, stored separately: the event's own date and the
+      // moment we picked it up.
+      eventAt: eventDate(candidate.postedAt, now),
+      detectedAt: new Date(now).toISOString(),
       strength: result.strength,
       dedupeKey: dedupeKey(accountId, candidate.hint ?? result.type, result.summary),
     });
@@ -291,8 +387,8 @@ export async function runIngestion(options: IngestOptions = {}): Promise<IngestR
   }
 
   if (!dryRun) {
-    setState("last_ingest_at", report.ranAt);
-    setState("last_ingest_report", JSON.stringify(report));
+    await setState(tenantId, "last_ingest_at", report.ranAt);
+    await setState(tenantId, "last_ingest_report", JSON.stringify(report));
   }
   return report;
 }

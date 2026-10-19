@@ -19,13 +19,19 @@ const STEPS = [
 
 export default function DashboardPage() {
   const [feed, setFeed] = useState<ScoredAccount[] | null>(null);
+  const [excluded, setExcluded] = useState<ScoredAccount[]>([]);
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [provider, setProvider] = useState<string>("");
   const [perf, setPerf] = useState<PerformanceSummary | null>(null);
 
   useEffect(() => {
-    fetch("/api/feed").then((r) => r.json()).then((d) => setFeed(d.feed));
+    fetch("/api/feed")
+      .then((r) => r.json())
+      .then((d) => {
+        setFeed(d.feed);
+        setExcluded(d.excluded ?? []);
+      });
     fetch("/api/drafts").then((r) => r.json()).then((d) => setDrafts(d.drafts));
     fetch("/api/profile")
       .then((r) => r.json())
@@ -45,7 +51,7 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title="Signal feed"
-        subtitle="Companies showing a need for data & AI services right now, ranked by signal strength. Refreshed weekly."
+        subtitle={`Companies showing a need for ${profile?.nicheConfig.label.toLowerCase() ?? "your services"} right now, ranked by signal strength and how well they fit the work you sell. Refreshed weekly.`}
         actions={
           <Link href="/signals" className="btn-primary">
             Open feed
@@ -96,6 +102,15 @@ export default function DashboardPage() {
               ))}
             </ul>
           )}
+          {feed && feed.length > 0 ? (
+            <p className="mt-4 text-[11px] leading-relaxed text-slate-400">
+              Ranked by evidence strength plus how well each account fits your target industries,
+              size and services.
+              {excluded.length > 0
+                ? ` ${excluded.length} account${excluded.length === 1 ? " is" : "s are"} hidden as a clear mismatch with your market — open the feed to see which.`
+                : ""}
+            </p>
+          ) : null}
         </Card>
 
         <Card className="p-5">

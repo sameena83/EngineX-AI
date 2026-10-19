@@ -1,7 +1,27 @@
-import { DatabaseSync } from "node:sqlite";
-import fs from "node:fs";
-import path from "node:path";
+// The data layer: every read and write in the app goes through this module.
+//
+// Two things changed from the SQLite version:
+//
+//   1. Storage is Postgres (see ./pg/pool.ts and ./pg/migrations.ts), so every
+//      function is async. The schema is applied on demand and recorded in
+//      schema_migrations, so a running deployment picks up a new table without
+//      a restart.
+//
+//   2. The app is multi-tenant. Every customer-owned table carries a tenant_id
+//      and **every function here takes the tenant id as its first argument**.
+//      That is deliberate: you cannot read another consultancy's data by
+//      forgetting to scope a query, because the scope is a required parameter
+//      rather than an implicit global. A tenant id that does not match simply
+//      returns nothing.
+//
+// Callers resolve the tenant once (see ./tenant.ts) and pass it down.
+
+import { asChannels } from "./channels";
 import { DEFAULT_PROFILE, SEED_ACCOUNTS } from "./seed-data";
+import { NotFoundError } from "./errors";
+import { DEFAULT_NICHE, nichePreset, presetChannelsFor } from "./niches";
+import { migrate } from "./pg/migrations";
+import { one, query, tx } from "./pg/pool";
 import type {
   Account,
   Brief,
@@ -9,286 +29,161 @@ import type {
   Draft,
   Integration,
   IntegrationKind,
+  Member,
+  NicheConfig,
   Outcome,
   Profile,
   SendRecord,
   Signal,
   SignalCorrection,
+  SignalDefinition,
+  Tenant,
+  Vocabulary,
 } from "./types";
+import { nicheConfigFromPreset, presetToVocabulary, resolveImplicitRouting } from "./vocab";
 
-// A single SQLite file powers the workspace. The report calls for PostgreSQL in
-// production; this local file store keeps the prototype runnable with no external
-// services while preserving the same relational shape.
+/* --------------------------- schema readiness ---------------------------- */
 
-// ENGINEX_DATA_DIR lets tests and demos run against a throwaway database instead
-// of the workspace one.
-const DATA_DIR = process.env.ENGINEX_DATA_DIR ?? path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "enginex.db");
-
-declare global {
-  var __enginexDb: DatabaseSync | undefined;
-}
-
-// Bump when createSchema gains a table or column. Existing databases store the
-// version they were built with, so an upgrade is applied without needing a
-// restart — see ensureSchema.
-const SCHEMA_VERSION = 2;
+let readyPromise: Promise<void> | null = null;
 
 /**
- * Create or upgrade the schema. Cheap to call on every request: it reads
- * PRAGMA user_version first and only runs the DDL when the schema has moved on.
- * Without this, a process that opened the database before a schema change (a
- * long-lived dev server, an upgraded deployment) would query a missing table.
+ * Apply migrations once per process before the first query. Memoised, so the
+ * cost is a no-op after the first call. A failure clears the memo so the next
+ * request retries instead of the process being stuck broken until a restart.
  */
-function ensureSchema(db: DatabaseSync) {
-  const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
-  if (Number(row?.user_version ?? 0) === SCHEMA_VERSION) return;
-  createSchema(db);
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+function ready(): Promise<void> {
+  if (!readyPromise) {
+    readyPromise = migrate()
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        readyPromise = null;
+        throw err;
+      });
+  }
+  return readyPromise;
 }
 
-function createSchema(db: DatabaseSync) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workspace (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      profile_json TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS accounts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      domain TEXT NOT NULL,
-      sector TEXT NOT NULL,
-      employees INTEGER NOT NULL,
-      location TEXT NOT NULL,
-      description TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'new'
-    );
-
-    CREATE TABLE IF NOT EXISTS signals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      type TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      evidence TEXT NOT NULL,
-      source TEXT NOT NULL,
-      source_url TEXT,
-      detected_at TEXT NOT NULL,
-      strength REAL NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS contacts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      name TEXT NOT NULL,
-      title TEXT NOT NULL,
-      email TEXT NOT NULL,
-      email_status TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      linkedin_url TEXT,
-      is_decision_maker INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS briefs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      why_now TEXT NOT NULL,
-      likely_pain TEXT NOT NULL,
-      case_study_angle TEXT NOT NULL,
-      who_to_contact TEXT NOT NULL,
-      generated_by TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS drafts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      channel TEXT NOT NULL,
-      subject TEXT,
-      body TEXT NOT NULL,
-      tone TEXT NOT NULL,
-      length TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'draft',
-      generated_by TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS integrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      kind TEXT NOT NULL UNIQUE,
-      label TEXT NOT NULL,
-      url TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      events_json TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS runtime_state (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS signal_corrections (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      signal_id INTEGER NOT NULL,
-      account_id INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      summary TEXT NOT NULL,
-      evidence TEXT NOT NULL,
-      source TEXT NOT NULL,
-      source_url TEXT,
-      reason TEXT,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS outcomes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      kind TEXT NOT NULL,
-      note TEXT,
-      occurred_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS sends (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      account_id INTEGER NOT NULL REFERENCES accounts(id),
-      draft_id INTEGER NOT NULL,
-      to_email TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      body TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      status TEXT NOT NULL,
-      error TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-
-  // Signals arrive from external sources that get polled repeatedly, so ingested
-  // signals carry a dedupe key and the unique index makes re-ingesting the same
-  // event a no-op. Seeded signals keep a NULL key (SQLite allows many NULLs).
-  const signalCols = db.prepare("PRAGMA table_info(signals)").all() as {
-    name: string;
-  }[];
-  if (!signalCols.some((c) => c.name === "dedupe_key")) {
-    db.exec("ALTER TABLE signals ADD COLUMN dedupe_key TEXT");
-  }
-  db.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS signals_dedupe_key ON signals (dedupe_key)",
-  );
+async function q<T extends Record<string, unknown>>(
+  text: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  await ready();
+  return query<T>(text, params);
 }
 
-function seed(db: DatabaseSync) {
-  db.prepare("INSERT INTO workspace (id, profile_json) VALUES (1, ?)").run(
-    JSON.stringify(DEFAULT_PROFILE),
-  );
-
-  const insertAccount = db.prepare(
-    `INSERT INTO accounts (name, domain, sector, employees, location, description, status)
-     VALUES (?, ?, ?, ?, ?, ?, 'new')`,
-  );
-  const insertSignal = db.prepare(
-    `INSERT INTO signals (account_id, type, summary, evidence, source, source_url, detected_at, strength)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const insertContact = db.prepare(
-    `INSERT INTO contacts (account_id, name, title, email, email_status, provider, linkedin_url, is_decision_maker)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  const now = Date.now();
-  for (const acc of SEED_ACCOUNTS) {
-    const info = insertAccount.run(
-      acc.name,
-      acc.domain,
-      acc.sector,
-      acc.employees,
-      acc.location,
-      acc.description,
-    );
-    const accountId = Number(info.lastInsertRowid);
-
-    for (const s of acc.signals) {
-      insertSignal.run(
-        accountId,
-        s.type,
-        s.summary,
-        s.evidence,
-        s.source,
-        s.sourceUrl ?? null,
-        new Date(now - s.daysAgo * 86_400_000).toISOString(),
-        s.strength,
-      );
-    }
-
-    for (const c of acc.contacts) {
-      const handle = c.name.toLowerCase().replace(/[^a-z ]/g, "").split(" ");
-      const email = `${handle[0]}.${handle[handle.length - 1]}@${acc.domain}`;
-      insertContact.run(
-        accountId,
-        c.name,
-        c.title,
-        email,
-        c.emailStatus ?? "verified",
-        "Licensed contact provider (sample)",
-        null,
-        c.decisionMaker ? 1 : 0,
-      );
-    }
-  }
+async function q1<T extends Record<string, unknown>>(
+  text: string,
+  params: unknown[] = [],
+): Promise<T | null> {
+  await ready();
+  return one<T>(text, params);
 }
 
-export function getDb(): DatabaseSync {
-  if (globalThis.__enginexDb) {
-    ensureSchema(globalThis.__enginexDb);
-    return globalThis.__enginexDb;
-  }
+async function txn<T>(fn: Parameters<typeof tx<T>>[0]): Promise<T> {
+  await ready();
+  return tx(fn);
+}
 
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL;");
-  ensureSchema(db);
+/** Exposed for scripts and tests that need the schema in place up front. */
+export async function ensureReady(): Promise<void> {
+  await ready();
+}
 
-  const count = db.prepare("SELECT COUNT(*) AS n FROM accounts").get() as {
-    n: number;
+/* ------------------------------- tenants --------------------------------- */
+
+function mapTenant(r: Record<string, unknown>): Tenant {
+  return {
+    id: Number(r.id),
+    slug: String(r.slug),
+    name: String(r.name),
+    plan: String(r.plan) as Tenant["plan"],
+    market: String(r.market),
+    createdAt: iso(r.created_at),
   };
-  if (count.n === 0) seed(db);
+}
 
-  const profileRow = db.prepare("SELECT COUNT(*) AS n FROM workspace").get() as {
-    n: number;
-  };
-  if (profileRow.n === 0) {
-    db.prepare("INSERT INTO workspace (id, profile_json) VALUES (1, ?)").run(
-      JSON.stringify(DEFAULT_PROFILE),
-    );
+export async function getTenant(id: number): Promise<Tenant | null> {
+  const row = await q1("SELECT * FROM tenants WHERE id = $1", [id]);
+  return row ? mapTenant(row) : null;
+}
+
+export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
+  const row = await q1("SELECT * FROM tenants WHERE slug = $1", [slug]);
+  return row ? mapTenant(row) : null;
+}
+
+/**
+ * Find a tenant by slug, creating it (and its starter workspace) when absent.
+ * Sign-up calls this once per new consultancy.
+ */
+export async function findOrCreateTenant(input: {
+  slug: string;
+  name: string;
+}): Promise<Tenant> {
+  const existing = await getTenantBySlug(input.slug);
+  if (existing) return existing;
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO tenants (slug, name) VALUES ($1, $2)
+     ON CONFLICT (slug) DO UPDATE SET name = excluded.name
+     RETURNING *`,
+    [input.slug, input.name],
+  );
+  const tenant = mapTenant(row as Record<string, unknown>);
+  await seedTenant(tenant.id);
+  return tenant;
+}
+
+export async function listMembers(tenantId: number): Promise<Member[]> {
+  const rows = await q("SELECT * FROM members WHERE tenant_id = $1 ORDER BY id", [tenantId]);
+  return rows.map(mapMember);
+}
+
+/** Tenants a user can open. Used to pick the active workspace after sign-in. */
+export async function tenantsForUser(userId: string): Promise<Tenant[]> {
+  const rows = await q(
+    `SELECT t.* FROM tenants t
+     JOIN members m ON m.tenant_id = t.id
+     WHERE m.user_id = $1
+     ORDER BY t.created_at`,
+    [userId],
+  );
+  return rows.map(mapTenant);
+}
+
+export async function upsertMember(input: {
+  tenantId: number;
+  userId: string;
+  email: string | null;
+  role?: Member["role"];
+}): Promise<Member> {
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO members (tenant_id, user_id, email, role)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+       email = excluded.email,
+       role = excluded.role
+     RETURNING *`,
+    [input.tenantId, input.userId, input.email, input.role ?? "owner"],
+  );
+  return mapMember(row as Record<string, unknown>);
+}
+
+export async function setTenantPlan(tenantId: number, plan: Tenant["plan"]): Promise<void> {
+  await q("UPDATE tenants SET plan = $1 WHERE id = $2", [plan, tenantId]);
+}
+
+/* --------------------------- the service profile ------------------------- */
+
+export async function getProfile(tenantId: number): Promise<Profile> {
+  const row = await q1<{ profile_json: Profile }>(
+    "SELECT profile_json FROM profiles WHERE tenant_id = $1",
+    [tenantId],
+  );
+  if (!row) {
+    await saveProfile(tenantId, DEFAULT_PROFILE);
+    return DEFAULT_PROFILE;
   }
-
-  globalThis.__enginexDb = db;
-  return db;
-}
-
-/** Drop all data and re-seed the sample market. Used by the demo reset action. */
-export function resetDb() {
-  const db = getDb();
-  db.exec(`
-    DELETE FROM drafts;
-    DELETE FROM briefs;
-    DELETE FROM contacts;
-    DELETE FROM signal_corrections;
-    DELETE FROM signals;
-    DELETE FROM accounts;
-    DELETE FROM workspace;
-    DELETE FROM sqlite_sequence;
-  `);
-  seed(db);
-}
-
-/* ------------------------------- reads ---------------------------------- */
-
-export function getProfile(): Profile {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT profile_json FROM workspace WHERE id = 1")
-    .get() as { profile_json: string };
-  const parsed = JSON.parse(row.profile_json) as Partial<Profile>;
+  const parsed = (row.profile_json ?? {}) as Partial<Profile>;
   // Backfill fields added after a workspace was first stored.
   return {
     ...DEFAULT_PROFILE,
@@ -296,82 +191,250 @@ export function getProfile(): Profile {
     idealClient: { ...DEFAULT_PROFILE.idealClient, ...(parsed.idealClient ?? {}) },
     sender: { ...DEFAULT_PROFILE.sender, ...(parsed.sender ?? {}) },
     delivery: { ...DEFAULT_PROFILE.delivery, ...(parsed.delivery ?? {}) },
+    niche: parsed.niche ?? DEFAULT_NICHE,
+    nicheConfig: mergeNicheConfig(parsed.nicheConfig),
   } as Profile;
 }
 
-export function saveProfile(profile: Profile) {
-  const db = getDb();
-  db.prepare("UPDATE workspace SET profile_json = ? WHERE id = 1").run(
-    JSON.stringify(profile),
+/**
+ * A stored niche config, completed against its preset.
+ *
+ * `scoring` is merged key by key rather than wholesale: a workspace that stored
+ * a config before `halfLifeDays` existed must not come back with `undefined`, or
+ * every signal would score as infinitely stale.
+ */
+function mergeNicheConfig(stored: Partial<NicheConfig> | undefined): NicheConfig {
+  const preset = nicheConfigFromPreset(nichePreset(stored?.key));
+  if (!stored) return preset;
+  return {
+    ...preset,
+    ...stored,
+    scoring: { ...preset.scoring, ...(stored.scoring ?? {}) },
+    buyerRoles: stored.buyerRoles ?? preset.buyerRoles,
+    exclusions: stored.exclusions ?? preset.exclusions,
+    negativeRules: stored.negativeRules ?? preset.negativeRules,
+    sourceQueries: stored.sourceQueries ?? preset.sourceQueries,
+  };
+}
+
+/* ---------------------------- the vocabulary ----------------------------- */
+
+/**
+ * A tenant's signal vocabulary. Seeded from their niche preset on first read, so
+ * a workspace created before this table existed (or by a niche switch that
+ * failed halfway) still comes back with a complete, usable set of signals.
+ */
+export async function getVocabulary(tenantId: number): Promise<Vocabulary> {
+  const rows = await q(
+    "SELECT * FROM signal_definitions WHERE tenant_id = $1 ORDER BY position, type",
+    [tenantId],
+  );
+  if (rows.length > 0) {
+    // Rows whose channels were never chosen follow the presets for their rule
+    // key, resolved here so every reader — classification, scoring, the API, the
+    // routing diagnostic — sees the routing that is actually applied.
+    return resolveImplicitRouting(rows.map(mapSignalDefinition), presetChannelsFor);
+  }
+
+  // Nothing stored yet: fall back to the tenant's preset and persist it, so the
+  // next read is a plain query and the user has something to edit.
+  const profile = await getProfile(tenantId);
+  const vocabulary = presetToVocabulary(nichePreset(profile.niche));
+  await saveVocabulary(tenantId, vocabulary);
+  return vocabulary;
+}
+
+/** Replace the whole vocabulary. A signal's key is its identity, so this is a diff. */
+export async function saveVocabulary(
+  tenantId: number,
+  vocabulary: Vocabulary,
+): Promise<void> {
+  await txn(async (client) => {
+    await client.query(
+      "DELETE FROM signal_definitions WHERE tenant_id = $1 AND NOT (type = ANY($2::text[]))",
+      [tenantId, vocabulary.map((d) => d.type)],
+    );
+    for (const [position, def] of vocabulary.entries()) {
+      await client.query(
+        `INSERT INTO signal_definitions
+           (tenant_id, type, label, short_label, weight, why, patterns, service_keywords, sources, sources_explicit, position, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, now())
+         ON CONFLICT (tenant_id, type) DO UPDATE SET
+           label = excluded.label,
+           short_label = excluded.short_label,
+           weight = excluded.weight,
+           why = excluded.why,
+           patterns = excluded.patterns,
+           service_keywords = excluded.service_keywords,
+           sources = excluded.sources,
+           sources_explicit = excluded.sources_explicit,
+           position = excluded.position,
+           updated_at = now()`,
+        [
+          tenantId,
+          def.type,
+          def.label,
+          def.shortLabel,
+          def.weight,
+          def.why,
+          JSON.stringify(def.patterns),
+          JSON.stringify(def.serviceKeywords),
+          JSON.stringify(def.sources ?? []),
+          // Undefined means the caller had no opinion, which can only mean the
+          // channels were deliberately set — the one path that writes rows
+          // without the flag is the preset itself.
+          def.sourcesExplicit !== false,
+          position,
+        ],
+      );
+    }
+  });
+}
+
+/**
+ * Point a workspace at a different niche in one step: swap the signal
+ * vocabulary, the niche config, and (by default) the service list that the
+ * service matcher reads.
+ *
+ * Existing signals are deliberately left alone. They were real evidence when
+ * they were collected, and the scorer still counts them at a neutral weight (see
+ * `definitionFor`), so switching market does not silently erase history — it
+ * re-labels it. The feed shows the old signals under `out` only if they no
+ * longer fit the new services.
+ */
+export async function applyNichePreset(
+  tenantId: number,
+  key: string,
+  options: { replaceServices?: boolean } = {},
+): Promise<{ profile: Profile; vocabulary: Vocabulary }> {
+  const preset = nichePreset(key);
+  const vocabulary = presetToVocabulary(preset);
+  await saveVocabulary(tenantId, vocabulary);
+
+  const current = await getProfile(tenantId);
+  const next: Profile = {
+    ...current,
+    niche: preset.key,
+    nicheConfig: nicheConfigFromPreset(preset),
+    services:
+      options.replaceServices === false
+        ? current.services
+        : preset.services.map((s) => ({ ...s })),
+  };
+  await saveProfile(tenantId, next);
+  return { profile: next, vocabulary };
+}
+
+export async function saveProfile(tenantId: number, profile: Profile): Promise<void> {
+  await q(
+    `INSERT INTO profiles (tenant_id, profile_json, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (tenant_id) DO UPDATE SET
+       profile_json = excluded.profile_json,
+       updated_at = now()`,
+    [tenantId, JSON.stringify(profile)],
   );
 }
 
-export function listAccounts(): Account[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM accounts ORDER BY name")
-    .all() as Record<string, unknown>[];
+/* ------------------------------- reads ---------------------------------- */
+
+export async function listAccounts(tenantId: number): Promise<Account[]> {
+  const rows = await q("SELECT * FROM accounts WHERE tenant_id = $1 ORDER BY name", [tenantId]);
   return rows.map(mapAccount);
 }
 
-export function getAccount(id: number): Account | null {
-  const db = getDb();
-  const row = db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as
-    | Record<string, unknown>
-    | undefined;
+export async function getAccount(tenantId: number, id: number): Promise<Account | null> {
+  const row = await q1("SELECT * FROM accounts WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
   return row ? mapAccount(row) : null;
 }
 
-export function listSignals(): Signal[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM signals ORDER BY detected_at DESC")
-    .all() as Record<string, unknown>[];
+export async function listSignals(tenantId: number): Promise<Signal[]> {
+  const rows = await q(
+    "SELECT * FROM signals WHERE tenant_id = $1 ORDER BY detected_at DESC",
+    [tenantId],
+  );
   return rows.map(mapSignal);
 }
 
-export function getSignalsForAccount(accountId: number): Signal[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      "SELECT * FROM signals WHERE account_id = ? ORDER BY detected_at DESC",
-    )
-    .all(accountId) as Record<string, unknown>[];
+export async function getSignalsForAccount(
+  tenantId: number,
+  accountId: number,
+): Promise<Signal[]> {
+  const rows = await q(
+    "SELECT * FROM signals WHERE tenant_id = $1 AND account_id = $2 ORDER BY detected_at DESC",
+    [tenantId, accountId],
+  );
   return rows.map(mapSignal);
 }
 
-export function getContactsForAccount(accountId: number): Contact[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      "SELECT * FROM contacts WHERE account_id = ? ORDER BY is_decision_maker DESC, name",
-    )
-    .all(accountId) as Record<string, unknown>[];
+export async function getContactsForAccount(
+  tenantId: number,
+  accountId: number,
+): Promise<Contact[]> {
+  const rows = await q(
+    `SELECT * FROM contacts
+     WHERE tenant_id = $1 AND account_id = $2
+     ORDER BY is_decision_maker DESC, name`,
+    [tenantId, accountId],
+  );
   return rows.map(mapContact);
 }
 
-export function getBriefForAccount(accountId: number): Brief | null {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM briefs WHERE account_id = ? ORDER BY id DESC LIMIT 1")
-    .get(accountId) as Record<string, unknown> | undefined;
+export async function getBriefForAccount(
+  tenantId: number,
+  accountId: number,
+): Promise<Brief | null> {
+  const row = await q1(
+    "SELECT * FROM briefs WHERE tenant_id = $1 AND account_id = $2 ORDER BY id DESC LIMIT 1",
+    [tenantId, accountId],
+  );
   return row ? mapBrief(row) : null;
 }
 
-export function getDraftsForAccount(accountId: number): Draft[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM drafts WHERE account_id = ? ORDER BY id")
-    .all(accountId) as Record<string, unknown>[];
+export async function getDraftsForAccount(
+  tenantId: number,
+  accountId: number,
+): Promise<Draft[]> {
+  const rows = await q(
+    "SELECT * FROM drafts WHERE tenant_id = $1 AND account_id = $2 ORDER BY id",
+    [tenantId, accountId],
+  );
   return rows.map(mapDraft);
 }
 
-export function listDrafts(): Draft[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM drafts ORDER BY created_at DESC")
-    .all() as Record<string, unknown>[];
+export async function listDrafts(tenantId: number): Promise<Draft[]> {
+  const rows = await q(
+    "SELECT * FROM drafts WHERE tenant_id = $1 ORDER BY created_at DESC",
+    [tenantId],
+  );
   return rows.map(mapDraft);
+}
+
+export async function listDraftsWithAccount(
+  tenantId: number,
+): Promise<(Draft & { accountName: string; accountDomain: string })[]> {
+  const rows = await q(
+    `SELECT d.*, a.name AS account_name, a.domain AS account_domain
+     FROM drafts d JOIN accounts a ON a.id = d.account_id
+     WHERE d.tenant_id = $1
+     ORDER BY d.created_at DESC, d.id`,
+    [tenantId],
+  );
+  return rows.map((r) => ({
+    ...mapDraft(r),
+    accountName: String(r.account_name),
+    accountDomain: String(r.account_domain),
+  }));
+}
+
+export async function getSignal(tenantId: number, id: number): Promise<Signal | null> {
+  const row = await q1("SELECT * FROM signals WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
+  return row ? mapSignal(row) : null;
+}
+
+export async function getDraft(tenantId: number, id: number): Promise<Draft | null> {
+  const row = await q1("SELECT * FROM drafts WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
+  return row ? mapDraft(row) : null;
 }
 
 /* --------------------- ingestion: accounts and signals ------------------ */
@@ -380,39 +443,44 @@ export function listDrafts(): Draft[] {
  * Create an account discovered by a signal source. Used by the ingestion path
  * (see ./ingest.ts); the sample market seed is the only other writer.
  */
-export function insertAccount(input: {
-  name: string;
-  domain: string;
-  sector: string;
-  employees: number;
-  location: string;
-  description: string;
-}): Account {
-  const info = getDb()
-    .prepare(
-      `INSERT INTO accounts (name, domain, sector, employees, location, description, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'new')`,
-    )
-    .run(
+export async function insertAccount(
+  tenantId: number,
+  input: {
+    name: string;
+    domain: string;
+    sector: string;
+    employees: number;
+    location: string;
+    description: string;
+  },
+): Promise<Account> {
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO accounts (tenant_id, name, domain, sector, employees, location, description, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'new')
+     RETURNING *`,
+    [
+      tenantId,
       input.name,
       input.domain,
       input.sector,
       input.employees,
       input.location,
       input.description,
-    );
-  return { id: Number(info.lastInsertRowid), status: "new", ...input };
+    ],
+  );
+  return mapAccount(row as Record<string, unknown>);
 }
 
 /**
  * Fill in blanks on an account we already know. A source must never overwrite a
  * good value with "Unknown", so only empty placeholders are replaced.
  */
-export function enrichAccount(
+export async function enrichAccount(
+  tenantId: number,
   id: number,
   patch: Partial<Pick<Account, "domain" | "sector" | "employees" | "location">>,
-) {
-  const current = getAccount(id);
+): Promise<void> {
+  const current = await getAccount(tenantId, id);
   if (!current) return;
   const next = {
     domain: current.domain || patch.domain || "",
@@ -430,11 +498,25 @@ export function enrichAccount(
   ) {
     return;
   }
-  getDb()
-    .prepare(
-      "UPDATE accounts SET domain = ?, sector = ?, employees = ?, location = ? WHERE id = ?",
-    )
-    .run(next.domain, next.sector, next.employees, next.location, id);
+  await q(
+    "UPDATE accounts SET domain = $1, sector = $2, employees = $3, location = $4 WHERE tenant_id = $5 AND id = $6",
+    [next.domain, next.sector, next.employees, next.location, tenantId, id],
+  );
+}
+
+/**
+ * Confirm an account belongs to the calling tenant before writing against it.
+ *
+ * The composite foreign keys in migration 2 already make a cross-tenant write
+ * impossible, but they surface as a database error. This turns the same mistake
+ * into a clean 404, and makes the tenant check explicit at the call site.
+ */
+async function assertAccount(tenantId: number, accountId: number): Promise<void> {
+  const row = await q1(
+    "SELECT 1 AS ok FROM accounts WHERE tenant_id = $1 AND id = $2",
+    [tenantId, accountId],
+  );
+  if (!row) throw new NotFoundError("Account not found");
 }
 
 function isEmptyPlaceholder(value: string): boolean {
@@ -443,283 +525,259 @@ function isEmptyPlaceholder(value: string): boolean {
 }
 
 /**
- * Insert a signal unless an equivalent one already exists. The unique index on
- * dedupe_key does the checking, so a repeated sighting of the same event is a
- * no-op rather than an error.
+ * Insert a signal unless an equivalent one already exists. The partial unique
+ * index on (tenant_id, dedupe_key) does the checking, so a repeated sighting of
+ * the same event is a no-op rather than an error. Returns null when it was a
+ * duplicate.
  */
-export function insertSignalIfNew(input: {
-  accountId: number;
-  type: Signal["type"];
-  summary: string;
-  evidence: string;
-  source: string;
-  sourceUrl: string | null;
-  detectedAt: string;
-  strength: number;
-  dedupeKey: string;
-}): Signal | null {
-  try {
-    const info = getDb()
-      .prepare(
-        `INSERT INTO signals (account_id, type, summary, evidence, source, source_url, detected_at, strength, dedupe_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.accountId,
-        input.type,
-        input.summary,
-        input.evidence,
-        input.source,
-        input.sourceUrl,
-        input.detectedAt,
-        input.strength,
-        input.dedupeKey,
-      );
-    return { id: Number(info.lastInsertRowid), ...input };
-  } catch (err) {
-    if (err instanceof Error && /UNIQUE constraint failed/.test(err.message)) {
-      return null;
-    }
-    throw err;
-  }
+export async function insertSignalIfNew(
+  tenantId: number,
+  input: {
+    accountId: number;
+    type: Signal["type"];
+    summary: string;
+    evidence: string;
+    source: string;
+    sourceUrl: string | null;
+    /** When the event happened, from the source. */
+    eventAt: string;
+    /** When we first saw it. */
+    detectedAt: string;
+    strength: number;
+    dedupeKey: string;
+  },
+): Promise<Signal | null> {
+  await assertAccount(tenantId, input.accountId);
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO signals
+       (tenant_id, account_id, type, summary, evidence, source, source_url, event_at, detected_at, strength, dedupe_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (tenant_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+     RETURNING *`,
+    [
+      tenantId,
+      input.accountId,
+      input.type,
+      input.summary,
+      input.evidence,
+      input.source,
+      input.sourceUrl,
+      input.eventAt,
+      input.detectedAt,
+      input.strength,
+      input.dedupeKey,
+    ],
+  );
+  return row ? mapSignal(row) : null;
 }
 
 /* --------------------------- trust corrections -------------------------- */
 
-export function getSignal(id: number): Signal | null {
-  const row = getDb().prepare("SELECT * FROM signals WHERE id = ?").get(id) as
-    | Record<string, unknown>
-    | undefined;
-  return row ? mapSignal(row) : null;
-}
-
 /** Remove a signal a human judged wrong. Returns whether there was one to remove. */
-export function deleteSignal(id: number): boolean {
-  const info = getDb().prepare("DELETE FROM signals WHERE id = ?").run(id);
-  return Number(info.changes) > 0;
+export async function deleteSignal(tenantId: number, id: number): Promise<boolean> {
+  const rows = await q("DELETE FROM signals WHERE tenant_id = $1 AND id = $2 RETURNING id", [
+    tenantId,
+    id,
+  ]);
+  return rows.length > 0;
 }
 
 /**
  * Keep the evidence of a rejected signal. The row is a record of what the engine
  * got wrong — it never counts towards a score, because the signal itself is gone.
  */
-export function recordSignalCorrection(input: {
-  signal: Signal;
-  reason: string | null;
-}): SignalCorrection {
-  const db = getDb();
-  const createdAt = new Date().toISOString();
+export async function recordSignalCorrection(
+  tenantId: number,
+  input: { signal: Signal; reason: string | null },
+): Promise<SignalCorrection> {
   const s = input.signal;
-  const info = db
-    .prepare(
-      `INSERT INTO signal_corrections
-         (signal_id, account_id, type, summary, evidence, source, source_url, reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      s.id,
-      s.accountId,
-      s.type,
-      s.summary,
-      s.evidence,
-      s.source,
-      s.sourceUrl,
-      input.reason,
-      createdAt,
-    );
-  return {
-    id: Number(info.lastInsertRowid),
-    signalId: s.id,
-    accountId: s.accountId,
-    type: s.type,
-    summary: s.summary,
-    evidence: s.evidence,
-    source: s.source,
-    sourceUrl: s.sourceUrl,
-    reason: input.reason,
-    createdAt,
-  };
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO signal_corrections
+       (tenant_id, signal_id, account_id, type, summary, evidence, source, source_url, reason, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+     RETURNING *`,
+    [tenantId, s.id, s.accountId, s.type, s.summary, s.evidence, s.source, s.sourceUrl, input.reason],
+  );
+  return mapSignalCorrection(row as Record<string, unknown>);
 }
 
-export function listSignalCorrections(accountId?: number): SignalCorrection[] {
-  const db = getDb();
-  const rows = (accountId
-    ? db
-        .prepare(
-          "SELECT * FROM signal_corrections WHERE account_id = ? ORDER BY created_at DESC, id DESC",
-        )
-        .all(accountId)
-    : db
-        .prepare("SELECT * FROM signal_corrections ORDER BY created_at DESC, id DESC")
-        .all()) as Record<string, unknown>[];
+export async function listSignalCorrections(
+  tenantId: number,
+  accountId?: number,
+): Promise<SignalCorrection[]> {
+  const rows = accountId
+    ? await q(
+        `SELECT * FROM signal_corrections
+         WHERE tenant_id = $1 AND account_id = $2
+         ORDER BY created_at DESC, id DESC`,
+        [tenantId, accountId],
+      )
+    : await q(
+        `SELECT * FROM signal_corrections
+         WHERE tenant_id = $1
+         ORDER BY created_at DESC, id DESC`,
+        [tenantId],
+      );
   return rows.map(mapSignalCorrection);
 }
 
 /* ------------------------------- writes --------------------------------- */
 
-export function listDraftsWithAccount(): (Draft & {
-  accountName: string;
-  accountDomain: string;
-})[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT d.*, a.name AS account_name, a.domain AS account_domain
-       FROM drafts d JOIN accounts a ON a.id = d.account_id
-       ORDER BY d.created_at DESC, d.id`,
-    )
-    .all() as Record<string, unknown>[];
-  return rows.map((r) => ({
-    ...mapDraft(r),
-    accountName: String(r.account_name),
-    accountDomain: String(r.account_domain),
-  }));
+export async function setAccountStatus(
+  tenantId: number,
+  id: number,
+  status: Account["status"],
+): Promise<void> {
+  await q("UPDATE accounts SET status = $1 WHERE tenant_id = $2 AND id = $3", [
+    status,
+    tenantId,
+    id,
+  ]);
 }
 
-export function setAccountStatus(id: number, status: Account["status"]) {
-  getDb().prepare("UPDATE accounts SET status = ? WHERE id = ?").run(status, id);
-}
-
-export function saveBrief(
+export async function saveBrief(
+  tenantId: number,
   accountId: number,
   b: Omit<Brief, "id" | "accountId" | "createdAt">,
-): Brief {
-  const db = getDb();
-  const createdAt = new Date().toISOString();
-  const info = db
-    .prepare(
-      `INSERT INTO briefs (account_id, why_now, likely_pain, case_study_angle, who_to_contact, generated_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+): Promise<Brief> {
+  await assertAccount(tenantId, accountId);
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO briefs
+       (tenant_id, account_id, why_now, likely_pain, case_study_angle, who_to_contact, generated_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+     RETURNING *`,
+    [
+      tenantId,
       accountId,
       b.whyNow,
       b.likelyPain,
       b.caseStudyAngle,
       b.whoToContact,
       b.generatedBy,
-      createdAt,
-    );
-  return {
-    id: Number(info.lastInsertRowid),
-    accountId,
-    createdAt,
-    ...b,
-  };
+    ],
+  );
+  return mapBrief(row as Record<string, unknown>);
 }
 
-export function replaceDrafts(
+export async function replaceDrafts(
+  tenantId: number,
   accountId: number,
   drafts: Omit<Draft, "id" | "accountId" | "createdAt">[],
-): Draft[] {
-  const db = getDb();
-  db.prepare("DELETE FROM drafts WHERE account_id = ?").run(accountId);
-  const stmt = db.prepare(
-    `INSERT INTO drafts (account_id, channel, subject, body, tone, length, status, generated_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const createdAt = new Date().toISOString();
-  const out: Draft[] = [];
-  for (const d of drafts) {
-    const info = stmt.run(
+): Promise<Draft[]> {
+  await assertAccount(tenantId, accountId);
+  // Replace is all-or-nothing: a partial failure must not leave an account with
+  // half a new set of drafts.
+  return txn(async (client) => {
+    await client.query("DELETE FROM drafts WHERE tenant_id = $1 AND account_id = $2", [
+      tenantId,
       accountId,
-      d.channel,
-      d.subject,
-      d.body,
-      d.tone,
-      d.length,
-      d.status,
-      d.generatedBy,
-      createdAt,
-    );
-    out.push({ id: Number(info.lastInsertRowid), accountId, createdAt, ...d });
-  }
-  return out;
+    ]);
+    const out: Draft[] = [];
+    for (const d of drafts) {
+      const res = await client.query<Record<string, unknown>>(
+        `INSERT INTO drafts
+           (tenant_id, account_id, channel, subject, body, tone, length, status, generated_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+         RETURNING *`,
+        [
+          tenantId,
+          accountId,
+          d.channel,
+          d.subject,
+          d.body,
+          d.tone,
+          d.length,
+          d.status,
+          d.generatedBy,
+        ],
+      );
+      out.push(mapDraft(res.rows[0]));
+    }
+    return out;
+  });
 }
 
-export function setDraftStatus(id: number, status: Draft["status"]) {
-  getDb()
-    .prepare("UPDATE drafts SET status = ? WHERE id = ?")
-    .run(status, id);
+export async function setDraftStatus(
+  tenantId: number,
+  id: number,
+  status: Draft["status"],
+): Promise<void> {
+  await q("UPDATE drafts SET status = $1 WHERE tenant_id = $2 AND id = $3", [
+    status,
+    tenantId,
+    id,
+  ]);
 }
 
 /** Persist a human or agent correction to a draft's text. */
-export function updateDraftText(
+export async function updateDraftText(
+  tenantId: number,
   id: number,
   subject: string | null,
   body: string,
-): Draft | null {
-  const db = getDb();
-  db.prepare("UPDATE drafts SET subject = ?, body = ? WHERE id = ?").run(
-    subject,
-    body,
-    id,
+): Promise<Draft | null> {
+  const row = await q1(
+    "UPDATE drafts SET subject = $1, body = $2 WHERE tenant_id = $3 AND id = $4 RETURNING *",
+    [subject, body, tenantId, id],
   );
-  const row = db.prepare("SELECT * FROM drafts WHERE id = ?").get(id) as
-    | Record<string, unknown>
-    | undefined;
-  return row ? mapDraft(row) : null;
-}
-
-export function getDraft(id: number): Draft | null {
-  const row = getDb().prepare("SELECT * FROM drafts WHERE id = ?").get(id) as
-    | Record<string, unknown>
-    | undefined;
   return row ? mapDraft(row) : null;
 }
 
 /* --------------------------- integrations ------------------------------- */
 
-export function listIntegrations(): Integration[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM integrations ORDER BY kind")
-    .all() as Record<string, unknown>[];
+export async function listIntegrations(tenantId: number): Promise<Integration[]> {
+  const rows = await q(
+    "SELECT * FROM integrations WHERE tenant_id = $1 ORDER BY kind",
+    [tenantId],
+  );
   return rows.map(mapIntegration);
 }
 
-export function upsertIntegration(
+export async function upsertIntegration(
+  tenantId: number,
   input: Omit<Integration, "id">,
-): Integration {
-  const db = getDb();
-  db.prepare(
-    `INSERT INTO integrations (kind, label, url, enabled, events_json)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(kind) DO UPDATE SET
+): Promise<Integration> {
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO integrations (tenant_id, kind, label, url, enabled, events_json, settings)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+     ON CONFLICT (tenant_id, kind) DO UPDATE SET
        label = excluded.label,
        url = excluded.url,
        enabled = excluded.enabled,
-       events_json = excluded.events_json`,
-  ).run(
-    input.kind,
-    input.label,
-    input.url,
-    input.enabled ? 1 : 0,
-    JSON.stringify(input.events),
+       events_json = excluded.events_json,
+       settings = excluded.settings
+     RETURNING *`,
+    [
+      tenantId,
+      input.kind,
+      input.label,
+      input.url,
+      input.enabled ? 1 : 0,
+      JSON.stringify(input.events),
+      JSON.stringify(input.settings ?? {}),
+    ],
   );
-  const row = db
-    .prepare("SELECT * FROM integrations WHERE kind = ?")
-    .get(input.kind) as Record<string, unknown>;
-  return mapIntegration(row);
+  return mapIntegration(row as Record<string, unknown>);
 }
 
-export function deleteIntegration(id: number) {
-  getDb().prepare("DELETE FROM integrations WHERE id = ?").run(id);
+export async function deleteIntegration(tenantId: number, id: number): Promise<void> {
+  await q("DELETE FROM integrations WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
 }
 
 /* ------------------------------- sends ---------------------------------- */
 
-export function recordSend(
+export async function recordSend(
+  tenantId: number,
   input: Omit<SendRecord, "id" | "createdAt">,
-): SendRecord {
-  const db = getDb();
-  const createdAt = new Date().toISOString();
-  const info = db
-    .prepare(
-      `INSERT INTO sends (account_id, draft_id, to_email, subject, body, provider, status, error, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+): Promise<SendRecord> {
+  await assertAccount(tenantId, input.accountId);
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO sends
+       (tenant_id, account_id, draft_id, to_email, subject, body, provider, status, error, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+     RETURNING *`,
+    [
+      tenantId,
       input.accountId,
       input.draftId,
       input.toEmail,
@@ -728,97 +786,287 @@ export function recordSend(
       input.provider,
       input.status,
       input.error,
-      createdAt,
-    );
-  return { id: Number(info.lastInsertRowid), createdAt, ...input };
+    ],
+  );
+  return mapSend(row as Record<string, unknown>);
 }
 
-export function listSends(): (SendRecord & { accountName: string })[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT s.*, a.name AS account_name
-       FROM sends s JOIN accounts a ON a.id = s.account_id
-       ORDER BY s.created_at DESC, s.id DESC`,
-    )
-    .all() as Record<string, unknown>[];
-  return rows.map((r) => ({
-    ...mapSend(r),
-    accountName: String(r.account_name),
-  }));
+export async function listSends(
+  tenantId: number,
+): Promise<(SendRecord & { accountName: string })[]> {
+  const rows = await q(
+    `SELECT s.*, a.name AS account_name
+     FROM sends s JOIN accounts a ON a.id = s.account_id
+     WHERE s.tenant_id = $1
+     ORDER BY s.created_at DESC, s.id DESC`,
+    [tenantId],
+  );
+  return rows.map((r) => ({ ...mapSend(r), accountName: String(r.account_name) }));
 }
 
 /* ---------------------------- runtime state ----------------------------- */
 
 // Small key/value store for scheduler bookkeeping (last digest run, which
 // accounts have already been alerted) — not user-facing configuration.
-export function getState(key: string): string | null {
-  const row = getDb().prepare("SELECT value FROM runtime_state WHERE key = ?").get(key) as
-    | { value: string }
-    | undefined;
+export async function getState(tenantId: number, key: string): Promise<string | null> {
+  const row = await q1<{ value: string }>(
+    "SELECT value FROM runtime_state WHERE tenant_id = $1 AND key = $2",
+    [tenantId, key],
+  );
   return row ? row.value : null;
 }
 
-export function setState(key: string, value: string) {
-  getDb()
-    .prepare(
-      `INSERT INTO runtime_state (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    )
-    .run(key, value);
+export async function setState(tenantId: number, key: string, value: string): Promise<void> {
+  await q(
+    `INSERT INTO runtime_state (tenant_id, key, value) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, key) DO UPDATE SET value = excluded.value`,
+    [tenantId, key, value],
+  );
 }
 
 /* ------------------------------ outcomes -------------------------------- */
 
-export function listOutcomes(): (Outcome & { accountName: string })[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `SELECT o.*, a.name AS account_name
-       FROM outcomes o JOIN accounts a ON a.id = o.account_id
-       ORDER BY o.occurred_at DESC, o.id DESC`,
-    )
-    .all() as Record<string, unknown>[];
+export async function listOutcomes(
+  tenantId: number,
+): Promise<(Outcome & { accountName: string })[]> {
+  const rows = await q(
+    `SELECT o.*, a.name AS account_name
+     FROM outcomes o JOIN accounts a ON a.id = o.account_id
+     WHERE o.tenant_id = $1
+     ORDER BY o.occurred_at DESC, o.id DESC`,
+    [tenantId],
+  );
   return rows.map((r) => ({ ...mapOutcome(r), accountName: String(r.account_name) }));
 }
 
-export function getOutcomesForAccount(accountId: number): Outcome[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM outcomes WHERE account_id = ? ORDER BY occurred_at DESC, id DESC")
-    .all(accountId) as Record<string, unknown>[];
+export async function getOutcomesForAccount(
+  tenantId: number,
+  accountId: number,
+): Promise<Outcome[]> {
+  const rows = await q(
+    `SELECT * FROM outcomes
+     WHERE tenant_id = $1 AND account_id = $2
+     ORDER BY occurred_at DESC, id DESC`,
+    [tenantId, accountId],
+  );
   return rows.map(mapOutcome);
 }
 
-export function recordOutcome(
+export async function recordOutcome(
+  tenantId: number,
   accountId: number,
   kind: Outcome["kind"],
   note: string | null,
-): Outcome {
-  const db = getDb();
-  const occurredAt = new Date().toISOString();
-  const info = db
-    .prepare(
-      "INSERT INTO outcomes (account_id, kind, note, occurred_at) VALUES (?, ?, ?, ?)",
-    )
-    .run(accountId, kind, note, occurredAt);
-  return { id: Number(info.lastInsertRowid), accountId, kind, note, occurredAt };
+): Promise<Outcome> {
+  await assertAccount(tenantId, accountId);
+  const row = await q1<Record<string, unknown>>(
+    `INSERT INTO outcomes (tenant_id, account_id, kind, note, occurred_at)
+     VALUES ($1, $2, $3, $4, now())
+     RETURNING *`,
+    [tenantId, accountId, kind, note],
+  );
+  return mapOutcome(row as Record<string, unknown>);
 }
 
-export function deleteOutcome(id: number) {
-  getDb().prepare("DELETE FROM outcomes WHERE id = ?").run(id);
+export async function deleteOutcome(tenantId: number, id: number): Promise<void> {
+  await q("DELETE FROM outcomes WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
 }
 
 /** Account ids that have had at least one email sent. */
-export function contactedAccountIds(): Set<number> {
-  const rows = getDb()
-    .prepare("SELECT DISTINCT account_id FROM sends")
-    .all() as Record<string, unknown>[];
+export async function contactedAccountIds(tenantId: number): Promise<Set<number>> {
+  const rows = await q(
+    "SELECT DISTINCT account_id FROM sends WHERE tenant_id = $1",
+    [tenantId],
+  );
   return new Set(rows.map((r) => Number(r.account_id)));
+}
+
+/* ------------------------------ seeding --------------------------------- */
+
+/**
+ * Give a new tenant the sample market so the workspace is never empty on first
+ * sign-in. Idempotent: does nothing if the tenant already has accounts.
+ */
+export async function seedTenant(tenantId: number): Promise<void> {
+  // The vocabulary is seeded separately from the sample market: a workspace
+  // already holding accounts (or upgraded from before this table existed) still
+  // needs its signal definitions, and getVocabulary() would otherwise fall back
+  // to a preset the customer has since moved away from.
+  const definitions = await q1<{ n: string }>(
+    "SELECT COUNT(*) AS n FROM signal_definitions WHERE tenant_id = $1",
+    [tenantId],
+  );
+  if (Number(definitions?.n ?? 0) === 0) {
+    await saveVocabulary(tenantId, presetToVocabulary(nichePreset(DEFAULT_PROFILE.niche)));
+  }
+
+  const count = await q1<{ n: string }>(
+    "SELECT COUNT(*) AS n FROM accounts WHERE tenant_id = $1",
+    [tenantId],
+  );
+  if (Number(count?.n ?? 0) > 0) return;
+
+  await txn(async (client) => {
+    // The check above is not enough on its own: a first page load fires several
+    // API requests at once, and every one of them sees an empty workspace and
+    // seeds it — the sample market arriving in duplicate. The lock serialises
+    // those first calls, and the re-check inside it is what makes seeding happen
+    // once. Keyed on the tenant, so seeding one workspace never blocks another.
+    await client.query("SELECT pg_advisory_xact_lock($1)", [
+      918_273_646 + tenantId,
+    ]);
+    const inside = await client.query<{ n: string }>(
+      "SELECT COUNT(*) AS n FROM accounts WHERE tenant_id = $1",
+      [tenantId],
+    );
+    if (Number(inside.rows[0]?.n ?? 0) > 0) return;
+
+    await client.query(
+      `INSERT INTO profiles (tenant_id, profile_json) VALUES ($1, $2)
+       ON CONFLICT (tenant_id) DO NOTHING`,
+      [tenantId, JSON.stringify(DEFAULT_PROFILE)],
+    );
+
+    const now = Date.now();
+    for (const acc of SEED_ACCOUNTS) {
+      const a = await client.query<{ id: string }>(
+        `INSERT INTO accounts (tenant_id, name, domain, sector, employees, location, description, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'new')
+         RETURNING id`,
+        [
+          tenantId,
+          acc.name,
+          acc.domain,
+          acc.sector,
+          acc.employees,
+          acc.location,
+          acc.description,
+        ],
+      );
+      const accountId = Number(a.rows[0].id);
+
+      for (const s of acc.signals) {
+        // Sample signals carry a single age, so event and detection dates match.
+        const at = new Date(now - s.daysAgo * 86_400_000).toISOString();
+        await client.query(
+          `INSERT INTO signals
+             (tenant_id, account_id, type, summary, evidence, source, source_url, event_at, detected_at, strength)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            tenantId,
+            accountId,
+            s.type,
+            s.summary,
+            s.evidence,
+            s.source,
+            s.sourceUrl ?? null,
+            at,
+            at,
+            s.strength,
+          ],
+        );
+      }
+
+      for (const c of acc.contacts) {
+        const handle = c.name.toLowerCase().replace(/[^a-z ]/g, "").split(" ");
+        const email = `${handle[0]}.${handle[handle.length - 1]}@${acc.domain}`;
+        await client.query(
+          `INSERT INTO contacts
+             (tenant_id, account_id, name, title, email, email_status, provider, linkedin_url, is_decision_maker)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            tenantId,
+            accountId,
+            c.name,
+            c.title,
+            email,
+            c.emailStatus ?? "verified",
+            "Licensed contact provider (sample)",
+            null,
+            c.decisionMaker ? 1 : 0,
+          ],
+        );
+      }
+    }
+  });
+}
+
+/**
+ * Drop a tenant's workspace and re-seed the sample market. Scoped strictly to
+ * one tenant, so the demo reset can never touch another customer's data.
+ */
+export async function resetTenant(tenantId: number): Promise<void> {
+  // A reset clears the workspace, not the customer's market. The sample market
+  // is data & AI, but a tenant on another niche must come back on their own
+  // vocabulary rather than silently reverting to the default one.
+  const before = await getProfile(tenantId).catch(() => null);
+
+  await txn(async (client) => {
+    // Ordered by dependency; ON DELETE CASCADE would cover it, but being
+    // explicit keeps the intent readable.
+    await client.query("DELETE FROM sends WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM outcomes WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM signal_corrections WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM drafts WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM briefs WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM contacts WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM signals WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM accounts WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM signal_definitions WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM profiles WHERE tenant_id = $1", [tenantId]);
+    await client.query("DELETE FROM runtime_state WHERE tenant_id = $1", [tenantId]);
+  });
+  await seedTenant(tenantId);
+
+  if (before && before.niche !== DEFAULT_NICHE) {
+    await applyNichePreset(tenantId, before.niche);
+  }
 }
 
 /* ------------------------------ mappers --------------------------------- */
 
+/** timestamptz comes back as a Date; the API surface is ISO strings. */
+function iso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+/** jsonb comes back already parsed; a malformed value must not break scoring. */
+function jsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function mapSignalDefinition(r: Record<string, unknown>): SignalDefinition {
+  return {
+    type: String(r.type),
+    label: String(r.label),
+    shortLabel: String(r.short_label),
+    weight: Number(r.weight),
+    why: String(r.why ?? ""),
+    patterns: jsonArray(r.patterns),
+    serviceKeywords: jsonArray(r.service_keywords),
+    // Filtered rather than trusted: a channel name that this build does not know
+    // is dropped instead of becoming a rule that can never match anything.
+    sources: asChannels(jsonArray(r.sources)),
+    // `false` means the channels were never chosen, so the routers resolve them
+    // from the presets rather than reading everything.
+    sourcesExplicit: r.sources_explicit === true,
+  };
+}
+
+/**
+ * bigint columns come back as strings from the driver (it cannot know they fit
+ * in a JS number), so ids are converted explicitly.
+ */
 function mapAccount(r: Record<string, unknown>): Account {
   return {
     id: Number(r.id),
@@ -841,7 +1089,9 @@ function mapSignal(r: Record<string, unknown>): Signal {
     evidence: String(r.evidence),
     source: String(r.source),
     sourceUrl: r.source_url == null ? null : String(r.source_url),
-    detectedAt: String(r.detected_at),
+    // Older rows predate the split, so fall back to the detection date.
+    eventAt: iso(r.event_at ?? r.detected_at),
+    detectedAt: iso(r.detected_at),
     strength: Number(r.strength),
   };
 }
@@ -857,7 +1107,7 @@ function mapSignalCorrection(r: Record<string, unknown>): SignalCorrection {
     source: String(r.source),
     sourceUrl: r.source_url == null ? null : String(r.source_url),
     reason: r.reason == null ? null : String(r.reason),
-    createdAt: String(r.created_at),
+    createdAt: iso(r.created_at),
   };
 }
 
@@ -884,7 +1134,7 @@ function mapBrief(r: Record<string, unknown>): Brief {
     caseStudyAngle: String(r.case_study_angle),
     whoToContact: String(r.who_to_contact),
     generatedBy: String(r.generated_by) as Brief["generatedBy"],
-    createdAt: String(r.created_at),
+    createdAt: iso(r.created_at),
   };
 }
 
@@ -895,6 +1145,20 @@ function mapIntegration(r: Record<string, unknown>): Integration {
   } catch {
     events = [];
   }
+  // A row written before migration 7 has no settings column value to read; an
+  // empty object is the same thing as "nothing configured yet".
+  let settings: Record<string, unknown> = {};
+  const rawSettings = r.settings;
+  if (rawSettings && typeof rawSettings === "object") {
+    settings = rawSettings as Record<string, unknown>;
+  } else if (typeof rawSettings === "string") {
+    try {
+      const parsed = JSON.parse(rawSettings) as unknown;
+      if (parsed && typeof parsed === "object") settings = parsed as Record<string, unknown>;
+    } catch {
+      settings = {};
+    }
+  }
   return {
     id: Number(r.id),
     kind: String(r.kind) as IntegrationKind,
@@ -902,6 +1166,7 @@ function mapIntegration(r: Record<string, unknown>): Integration {
     url: String(r.url),
     enabled: Number(r.enabled) === 1,
     events,
+    settings,
   };
 }
 
@@ -911,7 +1176,7 @@ function mapOutcome(r: Record<string, unknown>): Outcome {
     accountId: Number(r.account_id),
     kind: String(r.kind) as Outcome["kind"],
     note: r.note == null ? null : String(r.note),
-    occurredAt: String(r.occurred_at),
+    occurredAt: iso(r.occurred_at),
   };
 }
 
@@ -926,7 +1191,7 @@ function mapSend(r: Record<string, unknown>): SendRecord {
     provider: String(r.provider),
     status: String(r.status) as SendRecord["status"],
     error: r.error == null ? null : String(r.error),
-    createdAt: String(r.created_at),
+    createdAt: iso(r.created_at),
   };
 }
 
@@ -941,6 +1206,17 @@ function mapDraft(r: Record<string, unknown>): Draft {
     length: String(r.length),
     status: String(r.status) as Draft["status"],
     generatedBy: String(r.generated_by) as Draft["generatedBy"],
-    createdAt: String(r.created_at),
+    createdAt: iso(r.created_at),
+  };
+}
+
+function mapMember(r: Record<string, unknown>): Member {
+  return {
+    id: Number(r.id),
+    tenantId: Number(r.tenant_id),
+    userId: String(r.user_id),
+    email: r.email == null ? null : String(r.email),
+    role: String(r.role) as Member["role"],
+    createdAt: iso(r.created_at),
   };
 }

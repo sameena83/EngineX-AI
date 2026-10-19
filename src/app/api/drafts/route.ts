@@ -1,7 +1,9 @@
 import { connection } from "next/server";
 import { listDraftsWithAccount } from "@/lib/db";
+import { currentTenantId } from "@/lib/tenant";
 
 export async function GET() {
   await connection();
-  return Response.json({ drafts: listDraftsWithAccount() });
+  const tenantId = await currentTenantId();
+  return Response.json({ drafts: await listDraftsWithAccount(tenantId) });
 }

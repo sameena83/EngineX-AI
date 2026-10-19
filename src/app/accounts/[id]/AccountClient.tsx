@@ -13,7 +13,7 @@ import {
   StatusChip,
 } from "@/components/ui";
 import { relativeDate } from "@/lib/format";
-import { parseEvidence } from "@/lib/signals";
+import { detectedAgo, freshness, parseEvidence } from "@/lib/signals";
 import type {
   AccountBundle,
   Draft,
@@ -58,6 +58,15 @@ export function AccountClient() {
   const [sendForm, setSendForm] = useState<{ to: string; subject: string; body: string } | null>(
     null,
   );
+  // Editing happens on the draft itself, not only inside the send sheet: a
+  // correction you made while sending used to vanish with the panel.
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<{ subject: string; body: string }>({
+    subject: "",
+    body: "",
+  });
+  const [editBusy, setEditBusy] = useState(false);
+  const [editResult, setEditResult] = useState("");
   const [sendResult, setSendResult] = useState("");
   const [sending, setSending] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
@@ -159,7 +168,9 @@ export function AccountClient() {
     const res = await fetch(`/api/drafts/${draftId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subject: r.revisedSubject, body: r.revisedBody }),
+      // A review that proposes no subject (a LinkedIn or warm-intro draft) must
+      // not clear the one the draft already has.
+      body: JSON.stringify({ subject: r.revisedSubject ?? undefined, body: r.revisedBody }),
     });
     const data = await res.json();
     setBundle((p) =>
@@ -178,6 +189,42 @@ export function AccountClient() {
     setSendResult("");
     setSendOpen(d.id);
     setSendForm({ to: dm?.email ?? "", subject: d.subject ?? "", body: d.body });
+  }
+
+  function openEdit(d: Draft) {
+    setEditResult("");
+    setEditing(d.id);
+    setSendOpen(null);
+    setEditForm({ subject: d.subject ?? "", body: d.body });
+  }
+
+  async function saveEdit(draftId: number) {
+    if (!editForm.body.trim()) {
+      setEditResult("The draft cannot be empty.");
+      return;
+    }
+    setEditBusy(true);
+    const res = await fetch(`/api/drafts/${draftId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subject: editForm.subject.trim() ? editForm.subject : null,
+        body: editForm.body,
+      }),
+    });
+    const data = await res.json();
+    setEditBusy(false);
+    if (data.error) {
+      setEditResult(`Error: ${data.error}`);
+      return;
+    }
+    const saved = data.draft as Draft;
+    setBundle((p) =>
+      p ? { ...p, drafts: p.drafts.map((x) => (x.id === draftId ? saved : x)) } : p,
+    );
+    // Close the panel so the body below is the saved text, not a second copy.
+    setEditing(null);
+    setEditResult("Saved.");
   }
 
   async function doSend(draftId: number) {
@@ -401,6 +448,9 @@ export function AccountClient() {
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <CopyButton text={d.subject ? `${d.subject}\n\n${d.body}` : d.body} />
+                        <button className="btn-ghost" onClick={() => openEdit(d)}>
+                          {editing === d.id ? "Editing" : "Edit"}
+                        </button>
                         <button
                           className="btn-ghost"
                           disabled={reviewBusy === d.id}
@@ -429,12 +479,80 @@ export function AccountClient() {
                         </button>
                       </div>
                     </div>
-                    {d.subject ? (
-                      <div className="mb-1 text-sm font-medium text-slate-800">{d.subject}</div>
+                    {editing === d.id ? (
+                      <div className="mt-1 grid gap-2 rounded-lg border border-slate-300 bg-slate-50 p-3">
+                        {d.subject !== null ? (
+                          <div>
+                            <label className="label">Subject</label>
+                            <input
+                              className="input"
+                              value={editForm.subject}
+                              onChange={(e) =>
+                                setEditForm({ ...editForm, subject: e.target.value })
+                              }
+                            />
+                          </div>
+                        ) : null}
+                        <div>
+                          <label className="label">Body</label>
+                          <textarea
+                            className="input h-64"
+                            value={editForm.body}
+                            onChange={(e) => setEditForm({ ...editForm, body: e.target.value })}
+                          />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="btn-primary"
+                            disabled={editBusy}
+                            onClick={() => saveEdit(d.id)}
+                          >
+                            {editBusy ? "Saving…" : "Save changes"}
+                          </button>
+                          <button className="btn-ghost" onClick={() => setEditing(null)}>
+                            Cancel
+                          </button>
+                          {d.channel === "email" ? (
+                            <button
+                              className="btn-ghost"
+                              disabled={editBusy}
+                              onClick={() => {
+                                // Send what is on screen, not what was saved: the
+                                // person editing is usually about to send it.
+                                const next = {
+                                  subject: editForm.subject,
+                                  body: editForm.body,
+                                };
+                                setSendResult("");
+                                setEditing(null);
+                                setSendOpen(d.id);
+                                const dm =
+                                  bundle?.contacts.find((c) => c.isDecisionMaker) ??
+                                  bundle?.contacts[0];
+                                setSendForm({ to: dm?.email ?? "", ...next });
+                              }}
+                            >
+                              Save and send…
+                            </button>
+                          ) : null}
+                          {editResult ? (
+                            <span className="text-xs text-slate-600">{editResult}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        {d.subject ? (
+                          <div className="mb-1 text-sm font-medium text-slate-800">{d.subject}</div>
+                        ) : null}
+                        <pre className="whitespace-pre-wrap font-sans text-sm text-slate-600">
+                          {d.body}
+                        </pre>
+                      </>
+                    )}
+                    {editResult && editing !== d.id ? (
+                      <div className="mt-1 text-xs text-slate-500">{editResult}</div>
                     ) : null}
-                    <pre className="whitespace-pre-wrap font-sans text-sm text-slate-600">
-                      {d.body}
-                    </pre>
 
                     {reviews[d.id] ? (
                       <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3">
@@ -553,6 +671,37 @@ export function AccountClient() {
               Every signal, with the evidence it was read from and where it came from. If one is
               wrong, say so — it is removed from the score and kept as a correction.
             </p>
+            {score ? (
+              <div className="mb-4 rounded-lg border border-slate-200 p-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Why this ranks {score.score}
+                </div>
+                {score.fit.summary ? (
+                  <div className="mt-1 text-xs text-slate-600">{score.fit.summary}</div>
+                ) : null}
+                <ul className="mt-2 space-y-0.5">
+                  {score.contributions.map((c) => (
+                    <li key={c.type} className="flex justify-between text-[11px] text-slate-600">
+                      <span>{c.label}</span>
+                      <span className="text-slate-400">+{c.points}</span>
+                    </li>
+                  ))}
+                  <li className="flex justify-between border-t border-slate-100 pt-1 text-[11px] text-slate-600">
+                    <span>Fit with your market</span>
+                    <span className="text-slate-400">+{score.fitPoints}</span>
+                  </li>
+                </ul>
+                {score.penalties.length ? (
+                  <ul className="mt-2 space-y-0.5">
+                    {score.penalties.map((p) => (
+                      <li key={p} className="text-[11px] text-amber-700">
+                        − {p}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
             {signals.length === 0 ? (
               <p className="text-sm text-slate-500">No signals on file for this account.</p>
             ) : null}
@@ -564,7 +713,9 @@ export function AccountClient() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <SignalChip type={s.type} />
-                        <span className="text-xs text-slate-400">{relativeDate(s.detectedAt)}</span>
+                        <span className="text-xs text-slate-400">
+                          event {freshness(s)} · detected {detectedAgo(s)}
+                        </span>
                       </div>
                       <button
                         className="btn-ghost"
@@ -603,8 +754,11 @@ export function AccountClient() {
                         )}
                       </div>
                       <div>
-                        Detected {new Date(s.detectedAt).toLocaleString()} · strength {" "}
-                        {s.strength}
+                        Event {new Date(s.eventAt).toLocaleDateString()} · detected{" "}
+                        {new Date(s.detectedAt).toLocaleString()}
+                      </div>
+                      <div>
+                        Evidence strength {s.strength}
                         {ev.classifiedBy
                           ? ` · classified by ${ev.classifiedBy === "llm" ? "LLM" : "rules"}`
                           : ""}

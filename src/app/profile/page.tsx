@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Card, PageHeader, Spinner } from "@/components/ui";
+import { NicheEditor } from "@/components/NicheEditor";
 import type { CaseStudy, Profile, ServiceLine } from "@/lib/types";
 
 export default function ProfilePage() {
@@ -48,13 +49,19 @@ export default function ProfilePage() {
     <div>
       <PageHeader
         title="Service profile"
-        subtitle="Describe your services, ideal client and case studies once. Signals, briefs and drafts are generated against this profile."
+        subtitle="Describe your services, ideal client and case studies once, and set the niche those services belong to. Signals, briefs and drafts are generated against this profile."
         actions={
           <button className="btn-primary" onClick={save} disabled={status === "saving"}>
             {status === "saving" ? "Saving…" : status === "saved" ? "Saved" : "Save profile"}
           </button>
         }
       />
+
+      {/* The niche comes first: it decides which signals exist at all, so it is
+          the most consequential thing on this page. */}
+      <div className="mb-6">
+        <NicheEditor profile={profile} onProfile={setProfile} />
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="p-5">

@@ -2,13 +2,14 @@
 
 import { useState, type ReactNode } from "react";
 import {
-  SIGNAL_CLASS,
   STATUS_CLASS,
   TIER_CLASS,
   TIER_LABEL,
+  signalClass,
   signalLabel,
 } from "@/lib/format";
 import type { ScoredAccount, SignalType } from "@/lib/types";
+import { useVocabulary } from "@/lib/use-vocabulary";
 
 export function PageHeader({
   title,
@@ -43,9 +44,17 @@ export function ScoreBadge({ score, tier }: { score: number; tier: ScoredAccount
   );
 }
 
+/**
+ * A signal's chip, labelled from the tenant's vocabulary.
+ *
+ * The label is read here rather than passed in because every caller wants the
+ * same thing and the hook is cached per session — a page does not have to plumb
+ * the vocabulary down to each chip to have them read correctly.
+ */
 export function SignalChip({ type }: { type: SignalType }) {
+  const data = useVocabulary();
   return (
-    <span className={`badge ${SIGNAL_CLASS[type]}`}>{signalLabel(type)}</span>
+    <span className={`badge ${signalClass(type)}`}>{signalLabel(type, data?.vocabulary)}</span>
   );
 }
 

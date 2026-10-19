@@ -1,55 +1,33 @@
-import type { Profile, SignalType } from "./types";
+import { DEFAULT_NICHE, nichePreset } from "./niches";
+import type { Profile, SignalDefinition, SignalType } from "./types";
+import { nicheConfigFromPreset, presetToVocabulary } from "./vocab";
 
 // ---------------------------------------------------------------------------
-// Sample workspace + sample market data for the launch niche:
-// data & AI consultancies (5-50 people) selling to US mid-market companies.
+// Sample workspace + sample market data for the default niche
+// (data & AI consultancies, 5-50 people, selling to US mid-market companies).
 //
 // These accounts are FICTIONAL sample records used to demonstrate the product.
 // In production the same shapes are filled from job-board APIs, press releases,
 // funding/M&A feeds, public tenders and a licensed contact provider.
+//
+// The signal vocabulary itself is no longer hardcoded here: it is derived from
+// the niche preset in ./niches.ts, which is the same data a tenant stores in its
+// own `signal_definitions` rows. A workspace on another niche gets a different
+// set of keys from the same mechanism.
 // ---------------------------------------------------------------------------
 
-export const SIGNAL_DEFINITIONS: Record<
-  SignalType,
-  { label: string; shortLabel: string; weight: number; why: string }
-> = {
-  new_data_leader: {
-    label: "New data leader, first 90 days",
-    shortLabel: "New data leader",
-    weight: 0.95,
-    why: "A newly appointed CDO / VP Data / Head of AI often brings in outside partners early.",
-  },
-  data_hiring_no_leadership: {
-    label: "Data hiring without data leadership",
-    shortLabel: "Hiring, no leader",
-    weight: 0.85,
-    why: "Data engineers or ML roles with no visible CDO or Head of Data — a gap a partner can fill.",
-  },
-  public_rfp: {
-    label: "Public RFP or tender",
-    shortLabel: "Public RFP",
-    weight: 0.9,
-    why: "A live tender mentioning data, analytics or AI is an explicit statement of need.",
-  },
-  funding_ma: {
-    label: "Funding or M&A",
-    shortLabel: "Funding / M&A",
-    weight: 0.7,
-    why: "New funding or an acquisition creates immediate data integration and reporting work.",
-  },
-  platform_adoption: {
-    label: "Platform adoption",
-    shortLabel: "Platform adoption",
-    weight: 0.6,
-    why: "Public evidence of a move to Snowflake, Databricks, dbt or similar.",
-  },
-};
+/** Sample accounts below all use these keys, so the two stay in step. */
+export const SIGNAL_DEFINITIONS: Record<SignalType, SignalDefinition> = Object.fromEntries(
+  presetToVocabulary(nichePreset(DEFAULT_NICHE)).map((d) => [d.type, d]),
+);
 
 export const DEFAULT_PROFILE: Profile = {
   companyName: "Northwind Data & AI",
   website: "https://northwind-data.example",
   headcount: "18",
   region: "Stockholm, SE (selling to US)",
+  niche: DEFAULT_NICHE,
+  nicheConfig: nicheConfigFromPreset(nichePreset(DEFAULT_NICHE)),
   services: [
     {
       id: "svc-platform",

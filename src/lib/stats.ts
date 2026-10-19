@@ -1,6 +1,12 @@
-import { contactedAccountIds, listAccounts, listOutcomes, listSignals } from "./db";
-import { SIGNAL_DEFINITIONS } from "./seed-data";
+import {
+  contactedAccountIds,
+  getVocabulary,
+  listAccounts,
+  listOutcomes,
+  listSignals,
+} from "./db";
 import type { OutcomeKind, SignalType } from "./types";
+import { definitionFor } from "./vocab";
 
 // The report's core metric: meetings per 50 accounts, tracked per signal type.
 // Without this loop the feed is a guess; with it you can tell a customer which
@@ -33,13 +39,16 @@ export interface PerformanceSummary {
 
 const MEETING_KINDS: OutcomeKind[] = ["meeting", "won"];
 
-export function computePerformance(): PerformanceSummary {
-  const accounts = listAccounts();
-  const signals = listSignals();
-  const outcomes = listOutcomes();
+export async function computePerformance(tenantId: number): Promise<PerformanceSummary> {
+  const [accounts, signals, outcomes, contacted, vocabulary] = await Promise.all([
+    listAccounts(tenantId),
+    listSignals(tenantId),
+    listOutcomes(tenantId),
+    contactedAccountIds(tenantId),
+    getVocabulary(tenantId),
+  ]);
   // An account counts as contacted if we sent to it OR an outcome was logged for
   // it — logging "meeting booked" implies a conversation happened.
-  const contacted = contactedAccountIds();
   for (const o of outcomes) contacted.add(o.accountId);
 
   const signalsByAccount = new Map<number, Set<SignalType>>();
@@ -61,9 +70,16 @@ export function computePerformance(): PerformanceSummary {
   const hasMeeting = (accountId: number) =>
     MEETING_KINDS.some((k) => outcomeKindsByAccount.get(accountId)?.has(k)) ?? false;
 
-  const bySignal: SignalPerformance[] = (
-    Object.keys(SIGNAL_DEFINITIONS) as SignalType[]
-  ).map((type) => {
+  // The vocabulary, not a hardcoded list: this table exists so a customer can see
+  // which of THEIR signals produce meetings, including ones added after release.
+  // Signals stored before a niche switch are listed too, under a neutral label,
+  // so their performance history is not silently dropped.
+  const tracked = new Map<string, string>(vocabulary.map((d) => [d.type, d.shortLabel]));
+  for (const s of signals) {
+    if (!tracked.has(s.type)) tracked.set(s.type, definitionFor(vocabulary, s.type).shortLabel);
+  }
+
+  const bySignal: SignalPerformance[] = [...tracked].map(([type, label]) => {
     const carrying = accounts.filter((a) => signalsByAccount.get(a.id)?.has(type));
     const carryingContacted = carrying.filter((a) => contacted.has(a.id));
     const replies = carrying.filter((a) => hasReply(a.id)).length;
@@ -72,7 +88,7 @@ export function computePerformance(): PerformanceSummary {
     const denom = carrying.length || 1;
     return {
       type,
-      label: SIGNAL_DEFINITIONS[type].shortLabel,
+      label,
       accounts: carrying.length,
       contacted: carryingContacted.length,
       replies,

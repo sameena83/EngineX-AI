@@ -2,14 +2,45 @@
 
 import { useEffect, useState } from "react";
 import { Card, PageHeader, Spinner, StatusChip } from "@/components/ui";
+import { channelLabel, type Channel } from "@/lib/channels";
 import type { IngestReport } from "@/lib/ingest";
 import type { SourceStatus } from "@/lib/sources";
 import type { Integration, IntegrationKind, Profile, SendRecord } from "@/lib/types";
 
 type Meta = Record<
   IntegrationKind,
-  { label: string; hint: string; setup: string[]; steps: string[]; urlHint: string; docs: string }
+  {
+    label: string;
+    hint: string;
+    setup: string[];
+    steps: string[];
+    urlHint: string;
+    docs: string;
+    /** "webhook" needs a pasted URL; "api" is reached with a deployment token. */
+    transport: "webhook" | "api";
+  }
 >;
+
+interface HubspotStage {
+  id: string;
+  label: string;
+  probability: number | null;
+  closed: "won" | "lost" | "open";
+}
+
+interface HubspotPipeline {
+  id: string;
+  label: string;
+  stages: HubspotStage[];
+}
+
+/** What GET /api/integrations/hubspot/pipelines reports about the portal. */
+interface HubspotInfo {
+  configured: boolean;
+  mode: string;
+  pipelines: HubspotPipeline[];
+  error?: string;
+}
 
 function describeReport(r: IngestReport): string {
   const parts = [
@@ -18,6 +49,12 @@ function describeReport(r: IngestReport): string {
   ];
   if (r.accountsMatched) parts.push(`${r.accountsMatched} matched`);
   if (r.duplicates) parts.push(`${r.duplicates} already known`);
+  // Separated from "not a tracked signal" on purpose: this is the count that says
+  // your keywords are too broad, and it points at the negative rules to tune.
+  if (r.suppressed) parts.push(`${r.suppressed} suppressed as noise`);
+  // "Not a tracked signal" and "tracked, but not from this channel" are different
+  // problems: the second means the sources on this page do not cover the rules.
+  if (r.offChannel) parts.push(`${r.offChannel} matched a rule reading another channel`);
   if (r.unclassified) parts.push(`${r.unclassified} not a tracked signal`);
   const errors = r.sources.filter((s) => s.error).map((s) => `${s.label}: ${s.error}`);
   const prefix = r.mode === "dry_run" ? "Dry run — nothing written. " : "";
@@ -26,17 +63,35 @@ function describeReport(r: IngestReport): string {
   }`;
 }
 
+interface DraftSettings {
+  pipelineId?: string;
+  dealStageId?: string;
+  createDeals: boolean;
+}
+
 interface DraftState {
   url: string;
   enabled: boolean;
   label: string;
   events: string[];
+  /** Only meaningful for an API destination (HubSpot): the customer's choices. */
+  settings: DraftSettings;
 }
 
 // An endpoint that fails can return an empty body, which would throw out of
 // res.json(). Settling each read on its own keeps one bad card from blanking the
 // rest of the page.
 const readJson = (res: Response) => res.json().catch(() => ({}));
+
+/** Normalise whatever is stored on the row into the shape the card edits. */
+function draftedSettings(stored: Record<string, unknown>): DraftSettings {
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  return {
+    pipelineId: str(stored.pipelineId),
+    dealStageId: str(stored.dealStageId),
+    createDeals: stored.createDeals !== false,
+  };
+}
 
 const EVENT_LABELS: { id: string; label: string; hint: string }[] = [
   { id: "digest", label: "Scheduled digest", hint: "The top accounts, sent on your cadence (weekly or daily)" },
@@ -58,11 +113,15 @@ export default function IntegrationsPage() {
   const [policyBusy, setPolicyBusy] = useState(false);
   const [cronResult, setCronResult] = useState("");
   const [sources, setSources] = useState<SourceStatus[]>([]);
+  const [uncovered, setUncovered] = useState<Channel[]>([]);
+  const [unconstrained, setUnconstrained] = useState<string[]>([]);
   const [secretRequired, setSecretRequired] = useState(false);
   const [lastRun, setLastRun] = useState<IngestReport | null>(null);
   const [ingestResult, setIngestResult] = useState("");
   const [ingestBusy, setIngestBusy] = useState<"run" | "dry" | null>(null);
   const [digest, setDigest] = useState<string>("");
+  const [hubspot, setHubspot] = useState<HubspotInfo | null>(null);
+  const [hubspotDetail, setHubspotDetail] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,29 +139,45 @@ export default function IntegrationsPage() {
         const next: Record<string, DraftState> = {};
         for (const kind of Object.keys(data.meta) as IntegrationKind[]) {
           const existing = byKind[kind];
+          const stored = (existing?.settings ?? {}) as Record<string, unknown>;
           next[kind] = prev[kind] ?? {
             url: existing?.url ?? "",
             enabled: existing?.enabled ?? true,
             label: existing?.label ?? data.meta[kind].label,
             events: existing?.events ?? ALL_EVENTS,
+            settings: draftedSettings(stored),
           };
         }
         return next;
       });
       // Each read is settled on its own: one failing endpoint must not blank the
       // cards belonging to the others.
-      const [s, profRes, ingestRes] = await Promise.all([
+      const [s, profRes, ingestRes, hubRes] = await Promise.all([
         fetch("/api/sends").then(readJson),
         fetch("/api/profile").then(readJson),
         fetch("/api/ingest").then(readJson),
+        // A 5xx here is not fatal: the HubSpot card falls back to "no token yet".
+        fetch("/api/integrations/hubspot/pipelines").then(readJson),
       ]);
       if (cancelled) return;
       setSends(s.sends);
       setProvider(s.provider);
       setPolicy(profRes.profile?.delivery ?? null);
       setSources((ingestRes.sources as SourceStatus[]) ?? []);
+      setUncovered((ingestRes.uncovered as Channel[]) ?? []);
+      setUnconstrained((ingestRes.unconstrained as string[]) ?? []);
       setSecretRequired(Boolean(ingestRes.secretRequired));
       setLastRun((ingestRes.lastRun as IngestReport) ?? null);
+      setHubspot(
+        hubRes.configured === undefined
+          ? null
+          : ({
+              configured: Boolean(hubRes.configured),
+              mode: String(hubRes.mode ?? "dry_run"),
+              pipelines: (hubRes.pipelines as HubspotPipeline[]) ?? [],
+              error: hubRes.error as string | undefined,
+            } satisfies HubspotInfo),
+      );
     })();
     return () => {
       cancelled = true;
@@ -113,9 +188,28 @@ export default function IntegrationsPage() {
     setDrafts((p) => ({ ...p, [kind]: { ...p[kind], ...patch } }));
   }
 
+  /**
+   * Choosing a pipeline carries its stages with it, so the stage list can never
+   * show stages from a pipeline the customer just navigated away from.
+   */
+  function choosePipeline(kind: IntegrationKind, pipelineId: string) {
+    const pipeline = hubspot?.pipelines.find((p) => p.id === pipelineId);
+    const first = pipeline?.stages.find((s) => s.closed === "open") ?? pipeline?.stages[0];
+    setDraft(kind, {
+      settings: {
+        ...(drafts[kind]?.settings ?? { createDeals: true }),
+        pipelineId: pipelineId || undefined,
+        dealStageId: first?.id,
+      },
+    });
+  }
+
   async function save(kind: IntegrationKind) {
     const d = drafts[kind];
-    if (!d?.url) return;
+    if (!d) return;
+    // A webhook destination is its URL, so there is nothing to save without one.
+    // An API destination has its credential in the environment instead.
+    if (meta?.[kind]?.transport !== "api" && !d.url) return;
     setBusy(kind);
     const res = await fetch("/api/integrations", {
       method: "POST",
@@ -126,6 +220,7 @@ export default function IntegrationsPage() {
         enabled: d.enabled,
         label: d.label,
         events: d.events,
+        settings: d.settings,
       }),
     });
     const data = await res.json();
@@ -147,8 +242,9 @@ export default function IntegrationsPage() {
       delete next[kind];
       return next;
     });
-    setDraft(kind, { url: "", enabled: true, events: ALL_EVENTS });
+    setDraft(kind, { url: "", enabled: true, events: ALL_EVENTS, settings: { createDeals: true } });
     setTestResult((p) => ({ ...p, [kind]: "Removed." }));
+    setHubspotDetail("");
   }
 
   async function runIngest(dry: boolean) {
@@ -181,10 +277,11 @@ export default function IntegrationsPage() {
 
   async function test(kind: IntegrationKind) {
     setBusy(kind);
+    setHubspotDetail("");
     const res = await fetch("/api/integrations/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind, url: drafts[kind]?.url }),
+      body: JSON.stringify({ kind, url: drafts[kind]?.url, settings: drafts[kind]?.settings }),
     });
     const data = await res.json();
     setBusy(null);
@@ -192,10 +289,22 @@ export default function IntegrationsPage() {
       setTestResult((p) => ({ ...p, [kind]: `Error: ${data.error}` }));
       return;
     }
-    const r = data.result as { ok: boolean; status: number | null; error: string | null };
+    const r = data.result as {
+      ok: boolean;
+      status: number | null;
+      error: string | null;
+      detail?: string | null;
+    };
+    if (r.detail) setHubspotDetail(r.detail);
+    // For a CRM, "ok" is a weak signal — the useful answer is which pipelines
+    // were found and whether the chosen stage exists in the chosen pipeline.
     setTestResult((p) => ({
       ...p,
-      [kind]: r.ok ? "Test delivered ✓" : `Failed: ${r.error ?? r.status}`,
+      [kind]: r.ok
+        ? kind === "hubspot"
+          ? "Connected ✓"
+          : "Test delivered ✓"
+        : `Failed: ${r.error ?? r.status}`,
     }));
   }
 
@@ -249,7 +358,7 @@ export default function IntegrationsPage() {
     <div>
       <PageHeader
         title="Integrations"
-        subtitle="Deliver accounts where your partners already work. All four targets are inbound webhooks — EngineX POSTs JSON to the URL you paste."
+        subtitle="Deliver accounts where your partners already work: Slack, Teams, Make and Zapier take a webhook, and HubSpot is driven through its own API so accounts arrive as companies and deals instead of a payload to map."
         actions={
           <button className="btn-primary" disabled={busy === "digest"} onClick={sendDigest}>
             Send digest now
@@ -306,17 +415,34 @@ export default function IntegrationsPage() {
                     <span className="text-xs font-semibold text-slate-800">{s.label}</span>
                     <span
                       className={`badge ${
-                        !s.pull
-                          ? "bg-sky-100 text-sky-800"
-                          : s.configured
-                            ? "bg-emerald-100 text-emerald-800"
-                            : "bg-amber-100 text-amber-800"
+                        s.problem
+                          ? "bg-rose-100 text-rose-800"
+                          : !s.pull
+                            ? "bg-sky-100 text-sky-800"
+                            : s.configured
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-amber-100 text-amber-800"
                       }`}
                     >
-                      {!s.pull ? "Push" : s.configured ? "Live" : "Needs key"}
+                      {s.problem ? "Fix config" : !s.pull ? "Push" : s.configured ? "Live" : "Needs key"}
                     </span>
                   </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="text-slate-400">Feeds:</span>
+                    {s.channels === null ? (
+                      <span className="badge bg-slate-100 text-slate-600">any channel</span>
+                    ) : (
+                      s.channels.map((c) => (
+                        <span key={c} className="badge bg-slate-100 text-slate-600">
+                          {channelLabel(c)}
+                        </span>
+                      ))
+                    )}
+                  </div>
                   <div className="mt-1 text-[11px] leading-relaxed text-slate-500">{s.notes}</div>
+                  {s.problem ? (
+                    <div className="mt-1 text-[11px] leading-relaxed text-rose-600">{s.problem}</div>
+                  ) : null}
                   <div className="mt-1 text-[11px] text-slate-400">
                     {s.envVars.length ? (
                       <>
@@ -343,6 +469,31 @@ export default function IntegrationsPage() {
               </li>
             ))}
           </ul>
+        ) : null}
+        {uncovered.length ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-[11px] leading-relaxed text-amber-800">
+            <strong className="font-semibold">
+              {uncovered.length} channel{uncovered.length === 1 ? "" : "s"} your rules read with no
+              source behind {uncovered.length === 1 ? "it" : "them"}:
+            </strong>{" "}
+            {uncovered.map(channelLabel).join(", ")}. Signals in {uncovered.length === 1 ? "that channel" : "those channels"} can never
+            reach the feed until a source feeds {uncovered.length === 1 ? "it" : "them"} — add an
+            endpoint for it to <code>INGEST_HTTP_SOURCES</code> with that{" "}
+            <code>channel</code>, or push candidates here with a declared <code>channel</code>.
+          </div>
+        ) : null}
+        {unconstrained.length ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-[11px] leading-relaxed text-amber-800">
+            <strong className="font-semibold">
+              {unconstrained.length} rule{unconstrained.length === 1 ? "" : "s"} read every channel:
+            </strong>{" "}
+            {unconstrained.join(", ")}. They are matched against all evidence, so a tender phrase can
+            fire on a press release. Give each one the channels it should read on{" "}
+            <a className="underline" href="/profile">
+              the profile
+            </a>
+            .
+          </div>
         ) : null}
         {secretRequired ? (
           <div className="mt-3 text-[11px] text-amber-700">
@@ -425,9 +576,21 @@ export default function IntegrationsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         {kinds.map((kind) => {
           const m = meta[kind];
+          const isApi = m.transport === "api";
           const d =
-            drafts[kind] ?? { url: "", enabled: true, label: m.label, events: ALL_EVENTS };
+            drafts[kind] ?? {
+              url: "",
+              enabled: true,
+              label: m.label,
+              events: ALL_EVENTS,
+              settings: { createDeals: true },
+            };
           const existing = saved[kind];
+          // The stage list belongs to the chosen pipeline, so it is derived
+          // rather than stored: two sources of truth for which stages exist is
+          // how a stale id ends up in a saved row.
+          const stages =
+            hubspot?.pipelines.find((p) => p.id === d.settings.pipelineId)?.stages ?? [];
           return (
             <Card key={kind} className="p-5">
               <div className="mb-2 flex items-center justify-between">
@@ -449,13 +612,100 @@ export default function IntegrationsPage() {
                 ))}
               </ol>
 
-              <label className="label">Webhook URL</label>
-              <input
-                className="input font-mono text-xs"
-                placeholder={m.urlHint}
-                value={d.url}
-                onChange={(e) => setDraft(kind, { url: e.target.value })}
-              />
+              {isApi ? (
+                <div className="space-y-3">
+                  <div className="rounded-lg border border-slate-200 p-3 text-[11px] leading-relaxed">
+                    {hubspot?.configured ? (
+                      hubspot.error ? (
+                        <span className="text-rose-700">
+                          Token set, but the portal could not be read: {hubspot.error}
+                        </span>
+                      ) : (
+                        <span className="text-emerald-700">
+                          Token set — {hubspot.pipelines.length} pipeline
+                          {hubspot.pipelines.length === 1 ? "" : "s"} visible
+                          {hubspot.mode === "dry_run" ? " · dry run, nothing is written" : ""}.
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-amber-700">
+                        No <code>HUBSPOT_ACCESS_TOKEN</code> in this deployment yet, so nothing can
+                        be synced. Accounts, deals and notes are planned and logged instead.
+                      </span>
+                    )}
+                  </div>
+
+                  <label className="block">
+                    <span className="label">Deal pipeline</span>
+                    <select
+                      className="input"
+                      value={d.settings.pipelineId ?? ""}
+                      onChange={(e) => choosePipeline(kind, e.target.value)}
+                      disabled={!hubspot?.pipelines.length}
+                    >
+                      <option value="">
+                        {hubspot?.pipelines.length ? "Choose a pipeline…" : "No pipelines available"}
+                      </option>
+                      {hubspot?.pipelines.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block">
+                    <span className="label">Stage new deals open in</span>
+                    <select
+                      className="input"
+                      value={d.settings.dealStageId ?? ""}
+                      onChange={(e) =>
+                        setDraft(kind, {
+                          settings: { ...d.settings, dealStageId: e.target.value || undefined },
+                        })
+                      }
+                      disabled={stages.length === 0}
+                    >
+                      <option value="">{stages.length ? "Choose a stage…" : "Choose a pipeline first"}</option>
+                      {stages.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
+                          {s.closed === "won" ? " (won)" : s.closed === "lost" ? " (lost)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="flex items-start gap-2 text-xs text-slate-700">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={d.settings.createDeals}
+                      onChange={(e) =>
+                        setDraft(kind, {
+                          settings: { ...d.settings, createDeals: e.target.checked },
+                        })
+                      }
+                    />
+                    <span>
+                      <span className="font-medium">Open a deal for each qualifying account</span>
+                      <span className="block text-slate-500">
+                        Off keeps companies and their evidence in sync without opening deals.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              ) : (
+                <>
+                  <label className="label">Webhook URL</label>
+                  <input
+                    className="input font-mono text-xs"
+                    placeholder={m.urlHint}
+                    value={d.url}
+                    onChange={(e) => setDraft(kind, { url: e.target.value })}
+                  />
+                </>
+              )}
               <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
                 <input
                   type="checkbox"
@@ -496,17 +746,17 @@ export default function IntegrationsPage() {
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button
                   className="btn-primary"
-                  disabled={busy === kind || !d.url}
+                  disabled={busy === kind || (!isApi && !d.url)}
                   onClick={() => save(kind)}
                 >
                   Save
                 </button>
                 <button
                   className="btn-ghost"
-                  disabled={busy === kind || !d.url}
+                  disabled={busy === kind || (!isApi && !d.url)}
                   onClick={() => test(kind)}
                 >
-                  Send test
+                  {busy === kind ? "Checking…" : isApi ? "Check connection" : "Send test"}
                 </button>
                 {existing ? (
                   <button
@@ -544,8 +794,20 @@ export default function IntegrationsPage() {
                 </a>
               </details>
 
+              {isApi && hubspotDetail ? (
+                <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+                  {hubspotDetail}
+                </pre>
+              ) : null}
+
               <button className="btn-ghost mt-3" onClick={() => togglePreview(kind)}>
-                {preview[kind] ? "Hide payload" : "Preview payload"}
+                {preview[kind]
+                  ? isApi
+                    ? "Hide records"
+                    : "Hide payload"
+                  : isApi
+                    ? "Preview the records it would write"
+                    : "Preview payload"}
               </button>
               {preview[kind] ? (
                 <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-relaxed text-slate-100">

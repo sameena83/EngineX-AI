@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useVocabulary } from "@/lib/use-vocabulary";
 
 const LINKS = [
   { href: "/", label: "Dashboard", icon: "◆" },
@@ -10,11 +11,13 @@ const LINKS = [
   { href: "/analytics", label: "Analytics", icon: "◔" },
   { href: "/export", label: "Export", icon: "⤓" },
   { href: "/integrations", label: "Integrations", icon: "⇄" },
-  { href: "/profile", label: "Service profile", icon: "⚙" },
+  { href: "/niches", label: "Niche explorer", icon: "◈" },
+  { href: "/profile", label: "Profile & niche", icon: "⚙" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
+  const data = useVocabulary();
   return (
     <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-slate-200 bg-white px-4 py-6 md:flex">
       <div className="mb-8 px-2">
@@ -48,8 +51,18 @@ export function Nav() {
           );
         })}
       </nav>
+      {/* The niche is real workspace state, so it belongs in the chrome rather
+          than in a hardcoded label: this is what tells a security practice that
+          it is looking at security signals. */}
       <div className="mt-auto rounded-lg bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-500">
-        Launch niche: <span className="font-medium text-slate-700">data &amp; AI consultancies</span> selling to US mid-market.
+        Niche:{" "}
+        <span className="font-medium text-slate-700">
+          {data?.niche.label ?? "loading…"}
+        </span>
+        {data ? ` · ${data.vocabulary.length} signals tracked` : null}
+        <Link href="/profile" className="mt-1 block underline">
+          Change niche
+        </Link>
       </div>
     </aside>
   );

@@ -1,5 +1,5 @@
 import { chatJSON, llmEnabled } from "./llm";
-import type { Account, Brief, Contact, Draft, Profile, Signal } from "./types";
+import type { Account, Brief, Contact, Draft, Profile, Signal, Vocabulary } from "./types";
 import { signalDefinition } from "./signals";
 
 // The review agent sits between generation and sending: it checks a draft
@@ -39,6 +39,7 @@ export async function reviewDraft(
   brief: Brief | null,
   draft: Draft,
   contacts: Contact[],
+  vocabulary: Vocabulary = [],
 ): Promise<DraftReview> {
   if (llmEnabled()) {
     const dm = contacts.find((c) => c.isDecisionMaker) ?? contacts[0];
@@ -56,7 +57,7 @@ export async function reviewDraft(
 Sender: ${profile.companyName} (${profile.headcount} people). Tone: ${profile.tone}. Length: ${profile.length}.
 Recipient: ${dm ? `${dm.name}, ${dm.title}` : "unknown"} at ${account.name} (${account.sector}, ${account.employees} employees, ${account.location}).
 Signals:
-${signals.map((s) => `- ${signalDefinition(s.type).label}: ${s.summary}`).join("\n")}
+${signals.map((s) => `- ${signalDefinition(s.type, vocabulary).label}: ${s.summary}`).join("\n")}
 ${brief ? `Brief why-now: ${brief.whyNow}` : ""}
 
 Subject: ${draft.subject ?? "(none)"}

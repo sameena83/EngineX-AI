@@ -6,6 +6,7 @@ import type { IntegrationKind } from "@/lib/types";
 
 const SAMPLE: AccountCardData = {
   accountName: "Harborline Logistics",
+  domain: "harborline.example",
   sector: "Logistics",
   employees: 850,
   location: "Chicago, IL",
@@ -15,7 +16,7 @@ const SAMPLE: AccountCardData = {
   signalSummary: "New Head of Data hired, first 90 days",
 };
 
-const KINDS: IntegrationKind[] = ["slack", "teams", "make", "zapier"];
+const KINDS: IntegrationKind[] = ["slack", "teams", "make", "zapier", "hubspot"];
 
 export async function GET(request: Request) {
   const kind = new URL(request.url).searchParams.get("kind") as IntegrationKind | null;
