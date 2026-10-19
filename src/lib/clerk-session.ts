@@ -15,16 +15,35 @@ import type { Identity } from "./identity";
 
 export async function readSession(): Promise<Identity | null> {
   const { auth } = await import("@clerk/nextjs/server");
-  const { userId, sessionClaims } = await auth();
+  // The organization fields are read defensively: they only exist on a session
+  // that is signed in through an organization (an SSO connection, or an org the
+  // user selected), and a Clerk upgrade should not break resolution if the shape
+  // of `auth()` moves.
+  const session = (await auth()) as unknown as {
+    userId: string | null;
+    sessionClaims?: Record<string, unknown> | null;
+    orgId?: string | null;
+    orgSlug?: string | null;
+    orgRole?: string | null;
+    orgName?: string | null;
+  };
+  const { userId } = session;
   if (!userId) return null;
 
-  const claims = (sessionClaims ?? {}) as Record<string, unknown>;
+  const claims = (session.sessionClaims ?? {}) as Record<string, unknown>;
+  const org = {
+    orgId: session.orgId ?? firstString(claims, ["org_id", "organization_id"]),
+    orgSlug: session.orgSlug ?? firstString(claims, ["org_slug"]),
+    orgName: session.orgName ?? firstString(claims, ["org_name", "organization_name"]),
+    orgRole: session.orgRole ?? firstString(claims, ["org_role"]),
+  };
+
   const email = firstString(claims, ["email", "email_address", "primary_email_address"]);
   const name = firstString(claims, ["name", "full_name", "fullName"]);
-  if (email) return { userId, email, name };
+  if (email) return { userId, email, name, ...org };
 
   const cached = profileCache.get(userId);
-  if (cached) return { userId, ...cached };
+  if (cached) return { userId, ...cached, ...org };
 
   const { currentUser } = await import("@clerk/nextjs/server");
   const user = await currentUser().catch(() => null);
@@ -35,7 +54,7 @@ export async function readSession(): Promise<Identity | null> {
   // A failed lookup is cached too: a Clerk outage should not turn into one API
   // call per request for the rest of the process's life.
   profileCache.set(userId, profile);
-  return { userId, ...profile };
+  return { userId, ...profile, ...org };
 }
 
 const profileCache = new Map<string, { email: string | null; name?: string }>();

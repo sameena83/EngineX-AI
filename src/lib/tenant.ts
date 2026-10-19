@@ -19,22 +19,28 @@
 //      customer (or a self-hosted install) owns the deployment, which is what
 //      makes a production run possible without an identity provider. Every
 //      request is logged once as sharing that workspace.
-//   2. a session resolved — that user's workspace (the multi-tenant case; see
-//      above). A tenant can be shared by several users, since `members` allows
-//      it, but every request is scoped to the tenant the session maps to.
-//   3. the identity provider IS configured but this request has no session —
+//   2. a session signed in THROUGH AN ORGANIZATION resolved — that company's
+//      workspace (`tenants.clerk_org_id`). This is what makes "sign in with your
+//      work account" a shared workspace: colleagues who sign in through the same
+//      org land in the same tenant, with the org admin as its owner.
+//   3. a session resolved — that user's personal workspace (see above). A tenant
+//      can be shared by several users, since `members` allows it, but every
+//      request is scoped to the tenant the session maps to.
+//   4. the identity provider IS configured but this request has no session —
 //      refuse. Serving a fallback here would hand one workspace to every visitor
 //      while the operator believes sign-in is enforced.
-//   4. otherwise in production — refuse, loudly. Never quietly hand one
+//   5. otherwise in production — refuse, loudly. Never quietly hand one
 //      workspace to every visitor because a key was missing.
-//   5. otherwise in development — the seeded development tenant, so the app still
+//   6. otherwise in development — the seeded development tenant, so the app still
 //      runs with no configuration at all.
 //
 // The rule is a pure function of the environment so it can be tested directly
 // (tests/tenant-mode.test.ts) rather than only by running a deployment.
 
 import {
+  claimTenantForOrg,
   findOrCreateTenant,
+  getTenantByClerkOrgId,
   getTenantBySlug,
   seedTenant,
   tenantsForUser,
@@ -54,6 +60,8 @@ export function identityConfigured(): boolean {
 export type TenantDecision =
   /** A signed-in user: the workspace their `members` row points at. */
   | { kind: "user" }
+  /** Signed in through a company: the workspace that organization owns. */
+  | { kind: "organization" }
   | { kind: "single"; slug: string }
   | { kind: "development"; slug: string }
   | { kind: "refuse"; reason: string };
@@ -70,6 +78,16 @@ export function resolveTenantDecision(input: {
   identityConfigured?: boolean;
   /** Whether this request resolved a signed-in user. */
   hasSession?: boolean;
+  /**
+   * Whether that session is signed in through an organization (a company
+   * account, or any org — which is what an SSO connection belongs to).
+   *
+   * It outranks the personal workspace: if someone signs in with their work
+   * account, they want the firm's accounts, drafts and sends, not the ones from
+   * a personal sign-in. A person can still reach their own workspace by signing
+   * in without an active organization.
+   */
+  hasOrganization?: boolean;
   singleTenantSlug?: string | null;
   devTenantSlug?: string | null;
   nodeEnv?: string | null;
@@ -77,6 +95,7 @@ export function resolveTenantDecision(input: {
   const single = (input.singleTenantSlug ?? "").trim();
   if (single) return { kind: "single", slug: single };
 
+  if (input.hasSession && input.hasOrganization) return { kind: "organization" };
   if (input.hasSession) return { kind: "user" };
 
   if (input.identityConfigured) {
@@ -147,6 +166,62 @@ async function currentUserId(): Promise<Identity | null> {
   return readSession();
 }
 
+/**
+ * The role this person gets inside a company workspace.
+ *
+ * Stored, not yet enforced: every member of a workspace can act on its data
+ * today, and this row is what a per-member permission check would read. An org
+ * admin manages billing and colleagues, so they are recorded as the owner; the
+ * mapping is deliberately conservative — only an explicit admin becomes owner.
+ */
+function orgMemberRole(orgRole: string | undefined): "owner" | "member" {
+  return orgRole === "org:admin" || orgRole === "admin" ? "owner" : "member";
+}
+
+/**
+ * Find or create the tenant a sign-in organization owns, and join the person to it.
+ *
+ * The workspace is keyed by the provider's org id, so every colleague who signs
+ * in through the same company lands in the same tenant — which is what makes a
+ * shared inbox of accounts, drafts and sends possible. Seeding is idempotent, so
+ * a new org starts from the sample market exactly like a personal workspace.
+ */
+export async function ensureOrganizationTenant(identity: Identity): Promise<Tenant> {
+  const orgId = identity.orgId;
+  if (!orgId) throw new UnauthenticatedError("Sign in required");
+
+  let tenant = await getTenantByClerkOrgId(orgId);
+  if (!tenant) {
+    // The slug has to be unique and must not be guessable from a display name,
+    // so it is derived from the org id. It is internal — nothing routes on it —
+    // and the human-readable name is what the app shows.
+    const slug = `o-${orgId.replace(/[^a-zA-Z0-9]/g, "").slice(-20).toLowerCase()}`;
+    const created = await findOrCreateTenant({
+      slug,
+      name: identity.orgName ?? identity.orgSlug ?? "Company workspace",
+    });
+    // If another organization somehow claimed this row first, refuse rather than
+    // join: sharing a workspace by accident is worse than a failed request.
+    const claimed = await claimTenantForOrg(created.id, orgId);
+    if (!claimed) {
+      throw new Error(
+        "This workspace is already linked to another sign-in organization. " +
+          "Sign in through that organization, or contact the workspace owner.",
+      );
+    }
+    tenant = claimed;
+  }
+
+  await upsertMember({
+    tenantId: tenant.id,
+    userId: identity.userId,
+    email: identity.email,
+    role: orgMemberRole(identity.orgRole),
+  });
+  await seedTenant(tenant.id);
+  return tenant;
+}
+
 /** Find or create the tenant a signed-in user works in. */
 export async function ensureUserTenant(
   userId: string,
@@ -209,9 +284,18 @@ function warnSharedWorkspace(slug: string): void {
  */
 export async function currentTenantId(): Promise<number> {
   const identity = await currentUserId();
-  const decision = resolveTenantDecision({ ...DECISION_ENV(), hasSession: Boolean(identity) });
+  const decision = resolveTenantDecision({
+    ...DECISION_ENV(),
+    hasSession: Boolean(identity),
+    hasOrganization: Boolean(identity?.orgId),
+  });
 
   switch (decision.kind) {
+    case "organization": {
+      if (!identity?.orgId) throw new UnauthenticatedError("Sign in required");
+      const tenant = await ensureOrganizationTenant(identity);
+      return tenant.id;
+    }
     case "user": {
       // The decision says "user" only because a session resolved above.
       if (!identity) throw new UnauthenticatedError("Sign in required");

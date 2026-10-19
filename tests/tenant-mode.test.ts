@@ -18,6 +18,36 @@ test("a signed-in user is served their own workspace", () => {
   }
 });
 
+test("a session signed in through a company is served that company's workspace", () => {
+  // "Continue with Google" and "sign in with your work account" both end in a
+  // session; what differs is whether Clerk attached an organization. An org
+  // session must take the company workspace, not strand the person in a private
+  // one, or two colleagues would see two different sets of accounts.
+  assert.deepEqual(
+    resolveTenantDecision({ identityConfigured: true, hasSession: true, hasOrganization: true }),
+    { kind: "organization" },
+  );
+  // An explicit single-workspace deployment still wins: it has no per-user
+  // isolation to begin with.
+  assert.deepEqual(
+    resolveTenantDecision({ hasSession: true, hasOrganization: true, singleTenantSlug: "acme" }),
+    { kind: "single", slug: "acme" },
+  );
+});
+
+test("an organization without a session is still refused", () => {
+  // `hasOrganization` is meaningless on its own; it must not become a way in.
+  const mode = resolveTenantDecision({ identityConfigured: true, hasOrganization: true });
+  assert.equal(mode.kind, "refuse");
+});
+
+test("a personal session stays personal", () => {
+  assert.deepEqual(
+    resolveTenantDecision({ identityConfigured: true, hasSession: true, hasOrganization: false }),
+    { kind: "user" },
+  );
+});
+
 test("an identity provider with no session on the request refuses", () => {
   // The dangerous state: keys present, sign-in enforced, but this request has no
   // user. Falling through would serve one shared workspace while the operator

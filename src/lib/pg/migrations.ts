@@ -376,6 +376,25 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN settings jsonb NOT NULL DEFAULT '{}'::jsonb;
     `,
   },
+  {
+    version: 8,
+    name: "company workspaces",
+    sql: `
+      -- A workspace can now belong to a Clerk organization, not just to one user:
+      -- everyone who signs in with the company's account (an Enterprise SSO
+      -- connection, or a Google account in that organization) lands in the same
+      -- workspace instead of each getting a private one.
+      --
+      -- Nullable on purpose: a personal workspace has no organization, which is
+      -- also what makes the two kinds distinguishable at a glance. The unique
+      -- index is partial because "no organization" is not a value to de-duplicate.
+      ALTER TABLE tenants
+        ADD COLUMN clerk_org_id text;
+
+      CREATE UNIQUE INDEX tenants_clerk_org_idx
+        ON tenants (clerk_org_id) WHERE clerk_org_id IS NOT NULL;
+    `,
+  },
 ];
 
 export interface MigrationResult {

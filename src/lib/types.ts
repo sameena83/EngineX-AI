@@ -19,6 +19,12 @@ export interface Tenant {
   plan: "trial" | "starter" | "pro";
   /** Which market this tenant sells into (Phase 3 expands on this). */
   market: string;
+  /**
+   * The Clerk organization this workspace belongs to, when it is a company
+   * workspace rather than one person's. Everyone who signs in through that
+   * organization works here; a personal workspace leaves this null.
+   */
+  clerkOrgId: string | null;
   createdAt: string;
 }
 

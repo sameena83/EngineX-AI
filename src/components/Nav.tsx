@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
+import {
+  OrganizationSwitcher,
+  SignedIn,
+  SignedOut,
+  SignInButton,
+  UserButton,
+} from "@clerk/nextjs";
 import { useVocabulary } from "@/lib/use-vocabulary";
 
 const LINKS = [
@@ -63,15 +69,26 @@ export function Nav({ identityEnabled = false }: { identityEnabled?: boolean }) 
           chrome: one deployment, many customers, and this is the only place that
           says which one you are looking at. */}
       {identityEnabled ? (
-        <div className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2">
+        <div className="mt-4 flex flex-col gap-2">
+          {/* A company account is an organization, so this is the switch between
+              your own workspace and your firm's. Choosing a company here is what
+              makes every colleague land on the same accounts and drafts. */}
           <SignedIn>
-            <UserButton showName />
+            <OrganizationSwitcher
+              hidePersonal={false}
+              appearance={{ elements: { organizationSwitcherTrigger: "w-full justify-between" } }}
+            />
           </SignedIn>
-          <SignedOut>
-            <SignInButton mode="modal">
-              <button className="text-sm font-medium text-slate-700">Sign in</button>
-            </SignInButton>
-          </SignedOut>
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2">
+            <SignedIn>
+              <UserButton showName />
+            </SignedIn>
+            <SignedOut>
+              <SignInButton mode="modal">
+                <button className="text-sm font-medium text-slate-700">Sign in</button>
+              </SignInButton>
+            </SignedOut>
+          </div>
         </div>
       ) : null}
       {/* The niche is real workspace state, so it belongs in the chrome rather

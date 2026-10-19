@@ -98,8 +98,35 @@ function mapTenant(r: Record<string, unknown>): Tenant {
     name: String(r.name),
     plan: String(r.plan) as Tenant["plan"],
     market: String(r.market),
+    clerkOrgId: r.clerk_org_id ? String(r.clerk_org_id) : null,
     createdAt: iso(r.created_at),
   };
+}
+
+/** The company workspace an organization maps to, if it has one yet. */
+export async function getTenantByClerkOrgId(orgId: string): Promise<Tenant | null> {
+  const row = await q1("SELECT * FROM tenants WHERE clerk_org_id = $1", [orgId]);
+  return row ? mapTenant(row) : null;
+}
+
+/**
+ * Claim a workspace for an organization.
+ *
+ * Two requests can arrive together the first time a company signs in, and the
+ * unique index is what decides: the loser reads back the winner's row instead of
+ * failing, so both requests land in the same workspace.
+ */
+export async function claimTenantForOrg(tenantId: number, orgId: string): Promise<Tenant> {
+  const row = await q1(
+    "UPDATE tenants SET clerk_org_id = $2 WHERE id = $1 AND clerk_org_id IS NULL RETURNING *",
+    [tenantId, orgId],
+  );
+  if (row) return mapTenant(row);
+  const existing = await getTenantByClerkOrgId(orgId);
+  if (existing) return existing;
+  // Neither: the row is gone, or another workspace claimed the organization in
+  // between. Both are answered by looking the organization up again.
+  throw new NotFoundError("Workspace not found");
 }
 
 export async function getTenant(id: number): Promise<Tenant | null> {

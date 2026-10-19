@@ -14,6 +14,10 @@ The sample market is data & AI, so a fresh workspace shows something real immedi
 EngineX does **not** send email. Sending and deliverability stay with specialised tools
 (Instantly, Smartlead, Lemlist); this app produces the research and the drafts.
 
+How the pieces fit together — request path, sign-in and workspace resolution, the signal-to-send
+pipeline, and the blocks a deployment can hit — is in
+[docs/architecture.md](docs/architecture.md).
+
 ## The loop
 
 1. **Service profile** (`/profile`) — describe services, ideal client and case studies once.
@@ -143,8 +147,11 @@ order:
 - **`SINGLE_TENANT_SLUG=acme`** — this deployment serves that one workspace, in any environment,
   with sign-in unused. It is the first thing checked and it outranks a session, which is what makes
   `npm run build && npm start` possible for a single customer or your own install.
-- **a session resolved** — that user's workspace, through `members`. This is the multi-tenant case,
-  and it is what a deployment does once `CLERK_SECRET_KEY` and
+- **a session signed in through an organization** — that company's workspace. This outranks
+  the personal one: sign in with your work account and you see the firm's accounts, drafts and
+  sends, because the workspace belongs to the org (`tenants.clerk_org_id`), not to you.
+- **a session resolved** — that user's personal workspace, through `members`. This is the
+  multi-tenant case, and it is what a deployment does once `CLERK_SECRET_KEY` and
   `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` are set.
 - **keys set, but no session on this request** — refused, in every environment. Falling back would
   serve one workspace to everyone while the operator believes sign-in is enforced. A signed-out
@@ -172,6 +179,32 @@ person and a workspace is one row in `members`:
 - The scheduler runs every workspace: `POST /api/cron` with `CRON_SECRET` and no `tenantId` walks
   all tenants and reports per-tenant failures, so one customer's broken webhook cannot stop
   another's digest.
+
+### Signing in with Google, or with a company account
+
+Both are the same Clerk session; what differs is whether the session carries an organization.
+
+- **Google** is a social connection configured in the Clerk dashboard, not in this code: enable
+  Google under *User & authentication → Social connections* and paste an OAuth client from Google
+  Cloud Console. `Continue with Google` then appears on `/sign-in` and `/sign-up`. Nothing here has
+  to change, and a Google sign-in lands in a personal workspace.
+- **A company account** is an organization. Any signed-in person can create one from the workspace
+  switcher in the sidebar (`OrganizationSwitcher`, [src/components/Nav.tsx](src/components/Nav.tsx));
+  an admin can also connect the company's own identity provider (SAML/OIDC) to that organization in
+  the Clerk dashboard, which is what makes *Continue with your company account* appear — that
+  connection is an Enterprise SSO feature and is configured per organization in Clerk, not here.
+- Signing in through an organization resolves to that organization's workspace
+  (`ensureOrganizationTenant` in [src/lib/tenant.ts](src/lib/tenant.ts)), and every colleague who
+  signs in through the same org lands there: same accounts, same briefs, same drafts. The
+  organization is keyed by `tenants.clerk_org_id`, so renaming it changes nothing. The org admin is
+  stored as the workspace `owner`, everyone else as a `member`.
+- Signing in *without* an active organization still reaches a personal workspace, which is why the
+  switcher shows both. Nothing is copied between them: a person who starts solo and later joins a
+  company workspace keeps their own workspace intact.
+
+Two limits worth knowing: an organization must exist before a person can sign in through it, and
+its SSO connection is a paid Clerk feature, so the “company account” path is per-customer setup
+rather than something the first sign-in can create on its own.
 
 `GET /api/health` reports which of these a deployment is doing: `workspace.mode` is `multi` when each
 user gets their own workspace, `single` when `SINGLE_TENANT_SLUG` names one, and `refuse` when the
