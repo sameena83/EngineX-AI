@@ -4,7 +4,11 @@ import { nicheConfigFromPreset, presetToVocabulary } from "./vocab";
 
 // ---------------------------------------------------------------------------
 // Sample workspace + sample market data for the default niche
-// (data & AI consultancies, 5-50 people, selling to US mid-market companies).
+// (data & AI consultancies, 5-50 people, selling to Nordic mid-market companies).
+//
+// The demo market is deliberately local to the demo consultancy: a Stockholm
+// practice shown a Californian pipeline is a product that has not understood
+// where it is being sold.
 //
 // These accounts are FICTIONAL sample records used to demonstrate the product.
 // In production the same shapes are filled from job-board APIs, press releases,
@@ -25,7 +29,7 @@ export const DEFAULT_PROFILE: Profile = {
   companyName: "Northwind Data & AI",
   website: "https://northwind-data.example",
   headcount: "18",
-  region: "Stockholm, SE (selling to US)",
+  region: "Stockholm, SE",
   niche: DEFAULT_NICHE,
   nicheConfig: nicheConfigFromPreset(nichePreset(DEFAULT_NICHE)),
   services: [
@@ -55,12 +59,15 @@ export const DEFAULT_PROFILE: Profile = {
     },
   ],
   idealClient: {
-    sector: "US mid-market companies (logistics, healthcare, financial services, retail, industrials)",
+    sector:
+      "Nordic mid-market companies (logistics, healthcare, financial services, retail, industrials)",
     sizeMin: 200,
     sizeMax: 5000,
-    region: "United States",
+    // Country names, so the feed resolves each account's city against them.
+    // "Sweden" alone would have left Gothenburg unmatched before ./geo.ts.
+    region: "Sweden, Norway, Denmark, Finland, Iceland",
     description:
-      "Mid-market US companies with real data volume, a small in-house team, and no senior data leadership — where a six-figure engagement creates visible leverage.",
+      "Mid-market Nordic companies with real data volume, a small in-house team, and no senior data leadership — where a six-figure engagement creates visible leverage.",
   },
   caseStudies: [
     {
@@ -138,11 +145,11 @@ export type SeedAccount = {
 
 export const SEED_ACCOUNTS: SeedAccount[] = [
   {
-    name: "Harborline Logistics",
-    domain: "harborline.example",
+    name: "Bergström Logistics",
+    domain: "bergstromlogistics.example",
     sector: "Logistics",
     employees: 850,
-    location: "Chicago, IL",
+    location: "Gothenburg",
     description:
       "Regional freight and 3PL operator modernising a legacy operations stack.",
     signals: [
@@ -158,7 +165,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       {
         type: "funding_ma",
         daysAgo: 21,
-        summary: "Acquired a Midwest carrier, creating data integration work",
+        summary: "Acquired a Danish regional carrier, creating data integration work",
         evidence:
           "Press release announcing the acquisition of a 200-truck carrier; integration and consolidated reporting explicitly named as priorities.",
         source: "Press release",
@@ -166,17 +173,17 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Dana Whitlock", title: "VP Operations", decisionMaker: true },
-      { name: "Marcus Reed", title: "Director of IT", decisionMaker: true },
-      { name: "Priya Anand", title: "Senior Data Engineer", emailStatus: "likely" },
+      { name: "Annika Berg", title: "VP Operations", decisionMaker: true },
+      { name: "Johan Ekdahl", title: "Director of IT", decisionMaker: true },
+      { name: "Erik Lund", title: "Senior Data Engineer", emailStatus: "likely" },
     ],
   },
   {
-    name: "Meridian Health Partners",
-    domain: "meridianhealth.example",
+    name: "Vårdpartner Nord",
+    domain: "vardpartnernord.example",
     sector: "Healthcare",
     employees: 1400,
-    location: "Nashville, TN",
+    location: "Malmö",
     description:
       "Multi-site outpatient healthcare group with a budding analytics function.",
     signals: [
@@ -191,16 +198,16 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Elaine Foster", title: "Chief Data Officer", decisionMaker: true },
-      { name: "Tomás Iglesias", title: "Director, Clinical Analytics", decisionMaker: true },
+      { name: "Karin Åkesson", title: "Chief Data Officer", decisionMaker: true },
+      { name: "Tomas Iglesias", title: "Director, Clinical Analytics", decisionMaker: true },
     ],
   },
   {
-    name: "Copperfield Retail Group",
-    domain: "copperfieldretail.example",
+    name: "Svea Retail Group",
+    domain: "svearetail.example",
     sector: "Retail",
     employees: 600,
-    location: "Columbus, OH",
+    location: "Norrköping",
     description: "Regional omnichannel retailer with growing e-commerce volume.",
     signals: [
       {
@@ -223,40 +230,40 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Karen Osei", title: "VP Digital & E-commerce", decisionMaker: true },
+      { name: "Kajsa Osei", title: "VP Digital & E-commerce", decisionMaker: true },
       { name: "Luis Mendez", title: "IT Director", decisionMaker: true },
     ],
   },
   {
-    name: "Bluepeak Financial",
-    domain: "bluepeakfin.example",
+    name: "Nordkap Finans",
+    domain: "nordkapfinans.example",
     sector: "Financial services",
     employees: 450,
-    location: "Austin, TX",
+    location: "Stockholm",
     description: "Specialty lender modernising risk and reporting capabilities.",
     signals: [
       {
         type: "public_rfp",
         daysAgo: 4,
-        summary: "Public RFP for a cloud data warehouse and BI modernisation",
+        summary: "Public procurement for a cloud data warehouse and BI modernisation",
         evidence:
-          "Procurement portal RFP #2026-114 seeking a partner for warehouse migration, semantic layer and regulatory reporting.",
+          "Swedish procurement portal notice ref. 2026-114 seeking a partner for warehouse migration, semantic layer and regulatory reporting.",
         source: "Public procurement portal",
-        sourceUrl: "https://procurement.example/rfp/2026-114",
+        sourceUrl: "https://procurement.example/upphandling/2026-114",
         strength: 0.95,
       },
     ],
     contacts: [
-      { name: "Rachel Kim", title: "Chief Information Officer", decisionMaker: true },
-      { name: "Owen Bradley", title: "Head of Risk Analytics", decisionMaker: true },
+      { name: "Rakel Kim", title: "Chief Information Officer", decisionMaker: true },
+      { name: "Ove Bradley", title: "Head of Risk Analytics", decisionMaker: true },
     ],
   },
   {
-    name: "Summit Foods Co",
-    domain: "summitfoods.example",
+    name: "Fjällgård Foods",
+    domain: "fjallgardfoods.example",
     sector: "Consumer goods",
     employees: 1200,
-    location: "Denver, CO",
+    location: "Uppsala",
     description: "Packaged-food manufacturer with a large distribution footprint.",
     signals: [
       {
@@ -270,16 +277,16 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Grace Lindqvist", title: "VP Supply Chain", decisionMaker: true },
+      { name: "Greta Lindqvist", title: "VP Supply Chain", decisionMaker: true },
       { name: "Andre Cole", title: "Director of Finance Systems" },
     ],
   },
   {
-    name: "Northgate Insurance",
-    domain: "northgateins.example",
+    name: "Ankaret Insurance",
+    domain: "ankaretins.example",
     sector: "Insurance",
     employees: 900,
-    location: "Hartford, CT",
+    location: "Västerås",
     description: "Property & casualty carrier investing in underwriting analytics.",
     signals: [
       {
@@ -296,45 +303,45 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
         daysAgo: 30,
         summary: "Moving to Databricks per job ads and a partner case study",
         evidence:
-          "Three roles list Databricks; a platform partner published a case study naming Northgate.",
+          "Three roles list Databricks; a platform partner published a case study naming Ankaret.",
         source: "Job-board API + partner case study",
         strength: 0.65,
       },
     ],
     contacts: [
-      { name: "Helen Marsh", title: "VP Data & Analytics", decisionMaker: true },
-      { name: "Victor Nguyen", title: "Chief Underwriting Officer", decisionMaker: true },
+      { name: "Helena Marsh", title: "VP Data & Analytics", decisionMaker: true },
+      { name: "Viktor Nguyen", title: "Chief Underwriting Officer", decisionMaker: true },
     ],
   },
   {
-    name: "Vantage Manufacturing",
-    domain: "vantagemfg.example",
+    name: "Verkstad Precision",
+    domain: "verkstadprecision.example",
     sector: "Industrials",
     employees: 700,
-    location: "Detroit, MI",
+    location: "Eskilstuna",
     description: "Precision-components manufacturer digitising plant operations.",
     signals: [
       {
         type: "funding_ma",
         daysAgo: 14,
-        summary: "Closed a growth round to fund Industry 4.0 programme",
+        summary: "Closed a growth round to fund an Industry 4.0 programme",
         evidence:
-          "Announced a $40M growth investment naming plant analytics and IoT data as a use of funds.",
+          "Announced a SEK 400M growth investment naming plant analytics and IoT data as a use of funds.",
         source: "Press release",
         strength: 0.85,
       },
     ],
     contacts: [
-      { name: "Peter Kowalski", title: "COO", decisionMaker: true },
+      { name: "Per Kowalski", title: "COO", decisionMaker: true },
       { name: "Sofia Alvarez", title: "Head of Digital Transformation", decisionMaker: true },
     ],
   },
   {
-    name: "Larkspur Biotech",
-    domain: "larkspurbio.example",
+    name: "Nordlab Biotech",
+    domain: "nordlabbio.example",
     sector: "Biotech",
     employees: 320,
-    location: "Boston, MA",
+    location: "Lund",
     description: "Clinical-stage biotech scaling R&D data operations.",
     signals: [
       {
@@ -361,11 +368,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Riverstone Energy",
-    domain: "riverstoneenergy.example",
+    name: "Nordkraft Energi",
+    domain: "nordkraftenergi.example",
     sector: "Energy",
     employees: 1100,
-    location: "Houston, TX",
+    location: "Sundsvall",
     description: "Midstream energy operator modernising asset analytics.",
     signals: [
       {
@@ -375,7 +382,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
         evidence:
           "Tender references data ingestion from SCADA systems, a lakehouse and executive dashboards.",
         source: "Public tender portal",
-        sourceUrl: "https://tenders.example/riverstone/data",
+        sourceUrl: "https://tenders.example/nordkraft/data",
         strength: 0.9,
       },
       {
@@ -394,11 +401,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Cascade Utilities",
-    domain: "cascadeutilities.example",
+    name: "Storälven Energi",
+    domain: "storalvenenergi.example",
     sector: "Utilities",
     employees: 1500,
-    location: "Portland, OR",
+    location: "Östersund",
     description: "Regional utility investing in grid and customer analytics.",
     signals: [
       {
@@ -412,22 +419,22 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Alice Boyer", title: "Deputy CIO", decisionMaker: true },
+      { name: "Alicia Boyer", title: "Deputy CIO", decisionMaker: true },
       { name: "Jamal Wright", title: "Manager, Grid Analytics" },
     ],
   },
   {
-    name: "Brightpath Education",
-    domain: "brightpathed.example",
+    name: "Kunskapsporten",
+    domain: "kunskapsporten.example",
     sector: "Education technology",
     employees: 380,
-    location: "Seattle, WA",
+    location: "Umeå",
     description: "Digital curriculum provider scaling its product analytics.",
     signals: [
       {
         type: "funding_ma",
         daysAgo: 7,
-        summary: "Raised a $28M Series C",
+        summary: "Raised a SEK 280M Series C",
         evidence:
           "Funding announcement names data platform and AI personalisation as priorities.",
         source: "Press release",
@@ -435,16 +442,16 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Nicole Barnes", title: "VP Product", decisionMaker: true },
+      { name: "Nikolina Barnes", title: "VP Product", decisionMaker: true },
       { name: "Sam Okafor", title: "Head of Engineering", decisionMaker: true },
     ],
   },
   {
-    name: "Ironclad Security",
-    domain: "ironcladsec.example",
+    name: "Sköld Cyber",
+    domain: "skoldcyber.example",
     sector: "Cybersecurity",
     employees: 260,
-    location: "Denver, CO",
+    location: "Helsinki",
     description: "Managed security provider building a data-driven SOC.",
     signals: [
       {
@@ -462,19 +469,19 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Palmetto Healthcare",
-    domain: "palmettohc.example",
+    name: "Hälsonätet Väst",
+    domain: "halsonatetvast.example",
     sector: "Healthcare",
     employees: 700,
-    location: "Charleston, SC",
+    location: "Borås",
     description: "Community health system exploring population-health analytics.",
     signals: [
       {
         type: "public_rfp",
         daysAgo: 16,
-        summary: "RFP for population-health data platform",
+        summary: "Tender for a population-health data platform",
         evidence:
-          "RFP seeks a partner for a clinical data warehouse and risk-stratification models.",
+          "Tender seeks a partner for a clinical data warehouse and risk-stratification models.",
         source: "Public procurement portal",
         strength: 0.85,
       },
@@ -484,11 +491,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Foxglove Media",
-    domain: "foxglovemedia.example",
+    name: "Nordmedia Group",
+    domain: "nordmediagroup.example",
     sector: "Media",
     employees: 500,
-    location: "New York, NY",
+    location: "Copenhagen",
     description: "Digital publisher monetising audience data.",
     signals: [
       {
@@ -506,11 +513,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Redwood Payments",
-    domain: "redwoodpay.example",
+    name: "Nordpay",
+    domain: "nordpay.example",
     sector: "Fintech",
     employees: 300,
-    location: "San Francisco, CA",
+    location: "Stockholm",
     description: "Payments platform scaling fraud and risk analytics.",
     signals: [
       {
@@ -529,11 +536,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Great Lakes Freight",
-    domain: "greatlakesfreight.example",
+    name: "Öresund Freight",
+    domain: "oresundfreight.example",
     sector: "Logistics",
     employees: 950,
-    location: "Cleveland, OH",
+    location: "Helsingborg",
     description: "Intermodal freight company merging two operating systems.",
     signals: [
       {
@@ -559,11 +566,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Silver Creek Hospitality",
-    domain: "silvercreekhosp.example",
+    name: "Nordic Stay Group",
+    domain: "nordicstaygroup.example",
     sector: "Hospitality",
     employees: 1600,
-    location: "Phoenix, AZ",
+    location: "Visby",
     description: "Hotel group consolidating revenue and guest analytics.",
     signals: [
       {
@@ -580,11 +587,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Beacon Legal Group",
-    domain: "beaconlegal.example",
+    name: "Lind & Wall Advokater",
+    domain: "lindwalladvokater.example",
     sector: "Legal services",
     employees: 400,
-    location: "Dallas, TX",
+    location: "Gothenburg",
     description: "Law firm investing in matter and pricing analytics.",
     signals: [
       {
@@ -598,15 +605,15 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       },
     ],
     contacts: [
-      { name: "Harold Finch", title: "Chief Operating Officer", decisionMaker: true },
+      { name: "Harald Finch", title: "Chief Operating Officer", decisionMaker: true },
     ],
   },
   {
-    name: "Tidewater Marine",
-    domain: "tidewatermarine.example",
+    name: "Skärgårds Marine",
+    domain: "skargardsmarine.example",
     sector: "Maritime",
     employees: 620,
-    location: "Norfolk, VA",
+    location: "Kalmar",
     description: "Marine services operator with heavy sensor data.",
     signals: [
       {
@@ -624,11 +631,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Orchid Cosmetics",
-    domain: "orchidcosmetics.example",
+    name: "Lykta Beauty",
+    domain: "lyktabeauty.example",
     sector: "Beauty",
     employees: 480,
-    location: "Los Angeles, CA",
+    location: "Oslo",
     description: "DTC beauty brand scaling customer analytics.",
     signals: [
       {
@@ -647,11 +654,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Trailhead Outdoor",
-    domain: "trailheadoutdoor.example",
+    name: "Vildmark Outdoor",
+    domain: "vildmarkoutdoor.example",
     sector: "Consumer goods",
     employees: 350,
-    location: "Boulder, CO",
+    location: "Örebro",
     description: "Outdoor-equipment brand building a data function.",
     signals: [
       {
@@ -668,17 +675,17 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Pinnacle Aerospace",
-    domain: "pinnacleaero.example",
+    name: "Aero Nord",
+    domain: "aeronord.example",
     sector: "Aerospace",
     employees: 1250,
-    location: "Wichita, KS",
+    location: "Linköping",
     description: "Aerostructures supplier modernising quality analytics.",
     signals: [
       {
         type: "public_rfp",
         daysAgo: 15,
-        summary: "RFP for a manufacturing analytics platform",
+        summary: "Tender for a manufacturing analytics platform",
         evidence:
           "Tender covers sensor ingestion, quality analytics and a governance framework.",
         source: "Public procurement portal",
@@ -688,7 +695,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
         type: "platform_adoption",
         daysAgo: 28,
         summary: "References a lakehouse in partner materials",
-        evidence: "A platform partner lists Pinnacle in a manufacturing case study.",
+        evidence: "A platform partner lists Aero Nord in a manufacturing case study.",
         source: "Partner case study",
         strength: 0.6,
       },
@@ -699,11 +706,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Whitfield Pharma",
-    domain: "whitfieldpharma.example",
+    name: "Läkemod Pharma",
+    domain: "lakemodpharma.example",
     sector: "Pharmaceuticals",
     employees: 800,
-    location: "Raleigh, NC",
+    location: "Tampere",
     description: "Specialty pharma consolidating commercial analytics.",
     signals: [
       {
@@ -721,11 +728,11 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
     ],
   },
   {
-    name: "Cobalt Robotics Mfg",
-    domain: "cobaltrobotics.example",
+    name: "Mälardalen Robotics",
+    domain: "malardalenrobotics.example",
     sector: "Robotics",
     employees: 540,
-    location: "Pittsburgh, PA",
+    location: "Västerås",
     description: "Industrial robotics maker scaling fleet telemetry.",
     signals: [
       {
@@ -740,7 +747,7 @@ export const SEED_ACCOUNTS: SeedAccount[] = [
       {
         type: "funding_ma",
         daysAgo: 6,
-        summary: "Raised a $55M Series D",
+        summary: "Raised a SEK 550M Series D",
         evidence: "Round named fleet data and AI as core investment areas.",
         source: "Press release",
         strength: 0.8,

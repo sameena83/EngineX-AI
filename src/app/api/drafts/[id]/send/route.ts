@@ -16,7 +16,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/drafts/[id]
     return Response.json({ error: "Account not found" }, { status: 404 });
   }
 
-  const body = (await request.json()) as {
+  // A body is required, but a missing or malformed one is the caller's mistake
+  // and must not surface as a 500: the caller is told what to send instead.
+  let body: {
     to?: string;
     subject?: string;
     body?: string;
@@ -24,6 +26,14 @@ export async function POST(request: Request, ctx: RouteContext<"/api/drafts/[id]
     fromEmail?: string;
     replyTo?: string;
   };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return Response.json(
+      { error: "A JSON body with to, subject and body is required" },
+      { status: 400 },
+    );
+  }
 
   if (!body.to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.to)) {
     return Response.json({ error: "A valid recipient email is required" }, { status: 400 });

@@ -55,6 +55,10 @@ function describeReport(r: IngestReport): string {
   // "Not a tracked signal" and "tracked, but not from this channel" are different
   // problems: the second means the sources on this page do not cover the rules.
   if (r.offChannel) parts.push(`${r.offChannel} matched a rule reading another channel`);
+  // A recruiter's advert names the poster, not the buyer, so it cannot become an
+  // account. Counted on its own: it means the feed needs a buyer name, not better
+  // keywords.
+  if (r.intermediary) parts.push(`${r.intermediary} recruiter ads (buyer unnamed)`);
   if (r.unclassified) parts.push(`${r.unclassified} not a tracked signal`);
   const errors = r.sources.filter((s) => s.error).map((s) => `${s.label}: ${s.error}`);
   const prefix = r.mode === "dry_run" ? "Dry run — nothing written. " : "";

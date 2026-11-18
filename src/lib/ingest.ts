@@ -24,6 +24,7 @@ import {
   getProfile,
   getVocabulary,
 } from "./db";
+import { intermediaryPhrase } from "./intermediary";
 import { pullSources, sampleSource, type RawCandidate } from "./sources";
 import type { Channel, NicheConfig, Signal, SignalType, Vocabulary } from "./types";
 import { channelLabel } from "./channels";
@@ -66,6 +67,15 @@ export interface IngestReport {
   duplicates: number;
   unclassified: number;
   unattributed: number;
+  /**
+   * Recruiter and staffing adverts: a real vacancy, posted on behalf of a company
+   * the advert does not name.
+   *
+   * Separate from `unattributed` because it is not a broken source — it is a
+   * source working exactly as advertised, and the number is what tells a customer
+   * their job feed needs a buyer-name filter rather than a keyword tweak.
+   */
+  intermediary: number;
   /** Dropped by a negative rule — vendor marketing, awards, promotional filler. */
   suppressed: number;
   /**
@@ -166,14 +176,20 @@ export async function runIngestion(
   const vocabulary: Vocabulary = await getVocabulary(tenantId);
   const config: NicheConfig = profile.nicheConfig;
 
+  // A run that was handed candidates reads nothing else: a dry run of a push has
+  // to preview that push, not the bundled sample feed. Mixing both made a
+  // preview report five fictional accounts alongside the one real candidate,
+  // which reads as if the push had invented them.
   const adapters =
-    dryRun
-      ? [sampleSource()]
-      : options.includePull === false
-        ? []
-        : pullSources(config.sourceQueries).filter(
-            (s) => !options.sourceIds?.length || options.sourceIds.includes(s.id),
-          );
+    pushed.length > 0
+      ? []
+      : dryRun
+        ? [sampleSource()]
+        : options.includePull === false
+          ? []
+          : pullSources(config.sourceQueries).filter(
+              (s) => !options.sourceIds?.length || options.sourceIds.includes(s.id),
+            );
 
   const report: IngestReport = {
     mode: dryRun ? "dry_run" : "live",
@@ -187,6 +203,7 @@ export async function runIngestion(
     duplicates: 0,
     unclassified: 0,
     unattributed: 0,
+    intermediary: 0,
     suppressed: 0,
     offChannel: 0,
     samples: [],
@@ -248,6 +265,23 @@ export async function runIngestion(
         summary: candidate.text,
         action: "suppressed",
         note: `${veto.rule} ("${veto.phrase}")`,
+        url: candidate.url ?? null,
+      });
+      continue;
+    }
+
+    // A recruiter advertising someone else's vacancy is not an account. Checked
+    // before classification so the item cannot create a company record: the named
+    // employer is the poster, and the buyer stays unnamed.
+    const intermediary = intermediaryPhrase(candidate.text);
+    if (intermediary) {
+      report.intermediary += 1;
+      pushSample(report, {
+        accountName: name,
+        type: null,
+        summary: candidate.text,
+        action: "unattributed",
+        note: `recruiter advert ("${intermediary}") — the buyer is not named`,
         url: candidate.url ?? null,
       });
       continue;

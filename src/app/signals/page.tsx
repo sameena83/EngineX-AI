@@ -21,6 +21,21 @@ import { useVocabulary } from "@/lib/use-vocabulary";
 const STATUS_FILTERS = ["new", "approved", "dismissed"] as const;
 type StatusFilter = (typeof STATUS_FILTERS)[number] | "all";
 
+/** Whether the feed is scoped to the profile's target geography. */
+const REGION_SCOPES = ["mine", "all"] as const;
+type RegionScope = (typeof REGION_SCOPES)[number];
+
+/**
+ * Would this account be in the feed if geography were ignored?
+ *
+ * Mirrors the gate in ./match.ts minus the region term: an exclusion or an
+ * industry-and-size mismatch is out on its own, and everything else was only
+ * held back by where it is.
+ */
+function outsideRegionOnly(s: ScoredAccount): boolean {
+  return !s.fit.region.ok && !s.fit.exclusion && (s.fit.industry.ok || s.fit.size.ok);
+}
+
 /** Fit reads as a short badge so a mismatch is obvious before opening a card. */
 function FitChip({ fit }: { fit: ScoredAccount["fit"] }) {
   const [cls, label] =
@@ -47,11 +62,14 @@ export default function SignalsPage() {
   // the filter and the reader's own choice overrides it, rather than the two
   // fighting: `statusOverride` stays null until someone touches the control.
   const urlStatus = useUrlParamEnum("status", STATUS_FILTERS);
+  const urlScope = useUrlParamEnum("region", REGION_SCOPES);
   const urlMinScore = useUrlNumberParam("minScore");
   const [statusOverride, setStatusOverride] = useState<StatusFilter | null>(null);
   const [minScoreOverride, setMinScoreOverride] = useState<number | null>(null);
+  const [scopeOverride, setScopeOverride] = useState<RegionScope | null>(null);
   const status: StatusFilter = statusOverride ?? urlStatus ?? "all";
   const minScore = minScoreOverride ?? urlMinScore ?? 0;
+  const scope: RegionScope = scopeOverride ?? urlScope ?? "mine";
   const setStatus = setStatusOverride;
   const setMinScore = setMinScoreOverride;
 
@@ -69,13 +87,21 @@ export default function SignalsPage() {
 
   const filtered = useMemo(() => {
     if (!feed) return null;
-    return feed.filter((s) => {
-      if (s.score < minScore) return false;
-      if (status !== "all" && s.account.status !== status) return false;
-      if (type !== "all" && !s.signals.some((sig) => sig.type === type)) return false;
-      return true;
-    });
-  }, [feed, minScore, type, status]);
+    // "All regions" is the counterfactual view: the feed as it would look with
+    // geography ignored. Nothing is invisible, only out of scope by default.
+    // Accounts that are out for other reasons stay in the panel below — widening
+    // geography should not smuggle in work the practice cannot do.
+    const pool =
+      scope === "all" ? [...feed, ...excluded.filter(outsideRegionOnly)] : feed;
+    return pool
+      .filter((s) => {
+        if (s.score < minScore) return false;
+        if (status !== "all" && s.account.status !== status) return false;
+        if (type !== "all" && !s.signals.some((sig) => sig.type === type)) return false;
+        return true;
+      })
+      .sort((a, b) => b.score - a.score);
+  }, [feed, excluded, minScore, type, status, scope]);
 
   async function setAccount(accountId: number, next: "new" | "approved" | "dismissed") {
     setBusy(accountId);
@@ -98,7 +124,7 @@ export default function SignalsPage() {
     <div>
       <PageHeader
         title="Signal feed"
-        subtitle="Ranked by evidence strength, recency and how well each account fits your target industries, size and services. Approve the accounts you want to work; dismiss the rest."
+        subtitle="Ranked by evidence strength, recency and how well each account fits your target industries, size, services and region. Approve the accounts you want to work; dismiss the rest."
       />
 
       <Card className="mb-5 flex flex-wrap items-end gap-4 p-4">
@@ -143,6 +169,19 @@ export default function SignalsPage() {
               <option value="new">New</option>
               <option value="approved">Approved</option>
               <option value="dismissed">Dismissed</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="label">Where</label>
+          <div className="w-40">
+            <select
+              className="input"
+              value={scope}
+              onChange={(e) => setScopeOverride(e.target.value as RegionScope)}
+            >
+              <option value="mine">My region</option>
+              <option value="all">All regions</option>
             </select>
           </div>
         </div>
@@ -267,8 +306,8 @@ export default function SignalsPage() {
             <span className="text-xs text-slate-500">{showExcluded ? "Hide" : "Show"}</span>
           </button>
           <p className="mt-1 text-[11px] text-slate-500">
-            Hidden from the feed because they fall outside both your target industries and your
-            size range — not because the evidence was weak.
+            Hidden from the feed because they fail your target industries and size range, or
+            because they are outside your target region — not because the evidence was weak.
           </p>
           {showExcluded ? (
             <ul className="mt-3 space-y-2">
@@ -290,6 +329,9 @@ export default function SignalsPage() {
                     ) : null}
                     {s.fit.size.reason ? (
                       <div className="text-[11px] text-amber-700">− {s.fit.size.reason}</div>
+                    ) : null}
+                    {!s.fit.region.ok ? (
+                      <div className="text-[11px] text-amber-700">− {s.fit.region.reason}</div>
                     ) : null}
                   </div>
                   <span className="text-xs text-slate-500">score {s.score}</span>

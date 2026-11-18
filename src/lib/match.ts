@@ -23,6 +23,7 @@ import type {
   SignalDefinition,
   Vocabulary,
 } from "./types";
+import { compareRegion } from "./geo";
 import { definitionFor, exclusionHit } from "./vocab";
 
 /**
@@ -129,19 +130,52 @@ export function sizeFit(profile: Profile, account: Account): FitFactor {
 /* --------------------------------- region -------------------------------- */
 
 export function regionFit(profile: Profile, account: Account): FitFactor {
-  const targets = splitList(profile.idealClient.region);
-  const location = account.location?.trim() ?? "";
+  const stated = profile.idealClient.region?.trim() ?? "";
+  const base = profile.region?.trim() ?? "";
 
-  if (targets.length === 0) {
+  // A profile that names a target region is taken at its word. Without one, the
+  // consultancy's own base is the market it can actually reach — otherwise the
+  // location on the profile would be decorative, and a Stockholm practice would
+  // be shown a Californian pipeline.
+  const target = stated || base;
+  if (!target) {
     return fit(0.5, true, "No target region set — region not checked.");
   }
-  if (!location || location.toLowerCase() === "unknown") {
+
+  const location = account.location?.trim() ?? "";
+  const cmp = compareRegion(location, target, base);
+
+  if (cmp.status === "unknown_location") {
     return fit(0.4, true, "Location unknown, so it is not counted against it.");
   }
-  if (targets.some((t) => mentions(location, t) || mentions(t, location))) {
-    return fit(1, true, `Located in your target region (${location}).`);
+
+  if (cmp.status === "unresolved") {
+    // "EMEA", "remote", "worldwide": the place table cannot read it, so fall
+    // back to the plain mention check instead of calling a Swedish account out
+    // of a region we failed to understand.
+    const words = splitList(target);
+    if (words.some((t) => mentions(location, t) || mentions(t, location))) {
+      return fit(1, true, `Located in your target region (${location}).`);
+    }
+    return fit(0.4, true, `Could not place "${target}", so region is not counted against this account.`);
   }
-  return fit(0.2, true, `${location} is outside your stated region.`);
+
+  const country = cmp.account?.countryName ?? location;
+
+  if (cmp.status === "miss") {
+    return fit(0, false, `${location} is outside your target region (${target}).`);
+  }
+  if (cmp.status === "near") {
+    const label = stated ? "your target region" : "your base";
+    return fit(0.75, true, `${country} is next door to ${target} — near ${label}, not inside it.`);
+  }
+  if (cmp.via === "city") {
+    return fit(1, true, `Located in ${location}, one of your target cities.`);
+  }
+  if (cmp.via === "macro") {
+    return fit(1, true, `Located in ${country}, inside ${target}.`);
+  }
+  return fit(1, true, `Located in ${country}, one of your target countries.`);
 }
 
 /* -------------------------------- services ------------------------------- */
@@ -210,13 +244,22 @@ export function computeFit(
   const exclusion = exclusionHit(account, profile.nicheConfig?.exclusions);
 
   // Otherwise a clear mismatch is an industry the business is not in AND a size
-  // it cannot serve. Either one alone leaves it as something worth a look.
-  const clearMismatch = exclusion !== null || (!industry.ok && !size.ok);
+  // it cannot serve — either one alone leaves it as something worth a look. A
+  // resolved out-of-region location is a mismatch on its own: a consultancy that
+  // sells in Sweden cannot work a Californian account, however good the signal.
+  // An unknown location is never a mismatch, so missing data cannot hide a lead.
+  const clearMismatch = exclusion !== null || (!industry.ok && !size.ok) || !region.ok;
+  // Geography is worth enough to lift a perfect-on-paper account over the "in"
+  // line, but it must not rescue a company in an industry the practice does not
+  // serve: "in" means work you can actually sell, so a hard industry miss caps
+  // the result at borderline however well the location scores.
   const gate: FitResult["gate"] = clearMismatch
     ? "out"
-    : score >= 0.62
-      ? "in"
-      : "borderline";
+    : !industry.ok
+      ? "borderline"
+      : score >= 0.62
+        ? "in"
+        : "borderline";
 
   const summaryParts = [
     account.sector && account.sector !== "Unknown" ? account.sector : null,
