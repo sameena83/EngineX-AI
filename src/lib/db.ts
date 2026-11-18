@@ -923,6 +923,80 @@ export async function contactedAccountIds(tenantId: number): Promise<Set<number>
   return new Set(rows.map((r) => Number(r.account_id)));
 }
 
+/* ---------------------------- ai usage ---------------------------------- */
+
+/**
+ * Add one completed call to a workspace's day.
+ *
+ * An upsert rather than an insert: the cap is read on every generation, so the
+ * table is a per-day counter, and a customer generating twenty briefs writes
+ * twenty increments to one row instead of twenty rows to sum.
+ */
+export async function recordAiUsage(input: {
+  tenantId: number;
+  day: string;
+  model: string;
+  purpose: string;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+}): Promise<void> {
+  await q(
+    `INSERT INTO ai_usage
+       (tenant_id, day, model, purpose, calls, prompt_tokens, completion_tokens, cost_usd, updated_at)
+     VALUES ($1, $2::date, $3, $4, 1, $5, $6, $7, now())
+     ON CONFLICT (tenant_id, day, model, purpose) DO UPDATE SET
+       calls = ai_usage.calls + 1,
+       prompt_tokens = ai_usage.prompt_tokens + EXCLUDED.prompt_tokens,
+       completion_tokens = ai_usage.completion_tokens + EXCLUDED.completion_tokens,
+       cost_usd = ai_usage.cost_usd + EXCLUDED.cost_usd,
+       updated_at = now()`,
+    [
+      input.tenantId,
+      input.day,
+      input.model,
+      input.purpose,
+      Math.max(0, Math.round(input.promptTokens)),
+      Math.max(0, Math.round(input.completionTokens)),
+      input.costUsd,
+    ],
+  );
+}
+
+/** USD this workspace has spent on the model on `day` (UTC). */
+export async function aiUsageSpent(tenantId: number, day: string): Promise<number> {
+  const row = await q1<{ total: string }>(
+    "SELECT COALESCE(SUM(cost_usd), 0)::text AS total FROM ai_usage WHERE tenant_id = $1 AND day = $2::date",
+    [tenantId, day],
+  );
+  const total = Number(row?.total ?? 0);
+  return Number.isFinite(total) ? total : 0;
+}
+
+/** Per-day usage totals for the last `days` days, newest first. */
+export async function listAiUsage(tenantId: number, days = 14) {
+  const rows = await q(
+    `SELECT day::text AS day,
+            SUM(calls)::int AS calls,
+            SUM(prompt_tokens)::int AS prompt_tokens,
+            SUM(completion_tokens)::int AS completion_tokens,
+            SUM(cost_usd)::text AS cost_usd
+       FROM ai_usage
+      WHERE tenant_id = $1
+        AND day > (CURRENT_DATE - ($2::int * INTERVAL '1 day'))
+      GROUP BY day
+      ORDER BY day DESC`,
+    [tenantId, Math.max(1, Math.min(365, Math.round(days)))],
+  );
+  return rows.map((r) => ({
+    day: String(r.day),
+    calls: Number(r.calls),
+    promptTokens: Number(r.prompt_tokens),
+    completionTokens: Number(r.completion_tokens),
+    costUsd: Number(r.cost_usd),
+  }));
+}
+
 /* ------------------------------ seeding --------------------------------- */
 
 /**

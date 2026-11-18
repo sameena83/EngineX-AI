@@ -40,6 +40,8 @@ export async function reviewDraft(
   draft: Draft,
   contacts: Contact[],
   vocabulary: Vocabulary = [],
+  /** Whose spend this call belongs to, for the daily cap (see ./ai-usage.ts). */
+  tenantId?: number,
 ): Promise<DraftReview> {
   if (llmEnabled()) {
     const dm = contacts.find((c) => c.isDecisionMaker) ?? contacts[0];
@@ -69,6 +71,7 @@ Return JSON with keys:
 "revisedSubject" (corrected subject, or reproduce the original),
 "revisedBody" (the corrected body — only change what the issues describe),
 "rationale" (one sentence on the main change).`,
+      { purpose: "review", tenantId },
     );
     if (fromLlm && fromLlm.revisedBody) {
       return {

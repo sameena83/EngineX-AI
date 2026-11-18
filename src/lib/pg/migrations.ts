@@ -395,6 +395,36 @@ export const MIGRATIONS: Migration[] = [
         ON tenants (clerk_org_id) WHERE clerk_org_id IS NOT NULL;
     `,
   },
+  {
+    version: 9,
+    name: "ai usage per workspace",
+    sql: `
+      -- What each workspace spends on the model, so a customer's cost is a number
+      -- rather than an inference, and so a daily cap has something to read.
+      --
+      -- One row per workspace per day per model per purpose, incremented in
+      -- place: a brief is a handful of rows a day, not an event log, and a
+      -- counter keeps the table small enough to sum on every generation.
+      -- day is UTC, which is what makes the cap reset on a fixed boundary
+      -- instead of wherever the server happens to be.
+      CREATE TABLE ai_usage (
+        tenant_id        bigint  NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        day              date    NOT NULL,
+        model            text    NOT NULL,
+        purpose          text    NOT NULL,
+        calls            integer NOT NULL DEFAULT 0,
+        prompt_tokens    integer NOT NULL DEFAULT 0,
+        completion_tokens integer NOT NULL DEFAULT 0,
+        -- Numeric rather than float: this is money read back into a cap check,
+        -- and a cent should not depend on binary rounding.
+        cost_usd         numeric(12, 6) NOT NULL DEFAULT 0,
+        updated_at       timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (tenant_id, day, model, purpose)
+      );
+
+      CREATE INDEX ai_usage_tenant_day_idx ON ai_usage (tenant_id, day DESC);
+    `,
+  },
 ];
 
 export interface MigrationResult {

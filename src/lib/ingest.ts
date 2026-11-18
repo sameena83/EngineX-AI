@@ -297,7 +297,7 @@ export async function runIngestion(
     // tracked need must not create an account that then sits signal-less in the
     // feed. This is also what keeps an off-topic article from adding noise.
     const result = readable.length
-      ? await classify(candidate.text, readable, config)
+      ? await classify(candidate.text, readable, config, tenantId)
       : null;
 
     if (!result && channel && readable.length < vocabulary.length) {

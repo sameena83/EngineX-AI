@@ -20,6 +20,7 @@
 import { connection } from "next/server";
 import { configuredProvider } from "@/lib/email";
 import { INGEST_PUSH_GUARD, RESET_GUARD, accessMode } from "@/lib/guards";
+import { dailyCapUsd, modelFor } from "@/lib/ai-usage";
 import { llmProviderLabel } from "@/lib/llm";
 import { schemaVersion } from "@/lib/pg/migrations";
 import { getPool } from "@/lib/pg/pool";
@@ -71,7 +72,17 @@ export async function GET() {
           configured: identityConfigured(),
           provider: identityConfigured() ? "Clerk" : null,
         },
-        llm: { configured: llmProviderLabel() !== "Template engine", provider: llmProviderLabel() },
+        // Which model answers each kind of call, and the per-workspace daily
+        // ceiling. The day's spend is deliberately absent: this probe is
+        // unauthenticated, and a customer's bill is not public configuration.
+        // Use GET /api/usage for the per-workspace number.
+        llm: {
+          configured: llmProviderLabel() !== "Template engine",
+          provider: llmProviderLabel(),
+          model: modelFor("brief"),
+          classifyModel: modelFor("classify"),
+          dailyCapUsd: dailyCapUsd(),
+        },
         email: { configured: configuredProvider() !== "dry-run", provider: configuredProvider() },
         sources: {
           pullConfigured: hasPullSource(),

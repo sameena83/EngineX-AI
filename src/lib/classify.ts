@@ -96,6 +96,8 @@ export async function classify(
   text: string,
   vocab: Vocabulary,
   config?: NicheConfig,
+  /** Whose spend this call belongs to, for the daily cap (see ./ai-usage.ts). */
+  tenantId?: number,
 ): Promise<Classification | null> {
   if (llmEnabled() && vocab.length > 0) {
     const catalogue = vocab
@@ -117,6 +119,7 @@ export async function classify(
         `Return JSON with keys: "type" (one of the type keys above, or "none" if it is not ` +
         `evidence of a live need), "strength" (0..1, how strongly this item implies an active ` +
         `project), "summary" (one factual sentence, max 160 characters, quoting the specifics).`,
+      { purpose: "classify", tenantId },
     );
     if (fromLlm) {
       const def = vocab.find((d) => d.type === fromLlm.type);

@@ -22,6 +22,7 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/drafts/[id]/re
     draft,
     bundle.contacts,
     await getVocabulary(tenantId),
+    tenantId,
   );
   return Response.json({ review });
 }

@@ -17,6 +17,7 @@ export async function POST(_req: Request, ctx: RouteContext<"/api/accounts/[id]/
     bundle.signals,
     bundle.contacts,
     await getVocabulary(tenantId),
+    tenantId,
   );
   try {
     const brief = await saveBrief(tenantId, bundle.account.id, generated);

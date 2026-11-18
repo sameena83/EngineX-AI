@@ -98,6 +98,8 @@ export async function generateBrief(
   signals: Signal[],
   contacts: Contact[],
   vocabulary: Vocabulary = [],
+  /** Whose spend this call belongs to, for the daily cap (see ./ai-usage.ts). */
+  tenantId?: number,
 ): Promise<Omit<Brief, "id" | "accountId" | "createdAt">> {
   const fromLlm = await chatJSON<{
     whyNow: string;
@@ -121,6 +123,7 @@ Return JSON with keys:
 "likelyPain" (2-3 sentences: the concrete pain the signals imply),
 "caseStudyAngle" (1-2 sentences: which of our case studies to lead with and why),
 "whoToContact" (1-2 sentences: the role(s) to approach first and the hook).`,
+    { purpose: "brief", tenantId },
   );
 
   if (fromLlm && fromLlm.whyNow && fromLlm.likelyPain) {
@@ -238,6 +241,8 @@ export async function generateDrafts(
   brief: Omit<Brief, "id" | "accountId" | "createdAt"> | null,
   contacts: Contact[],
   vocabulary: Vocabulary = [],
+  /** Whose spend this call belongs to, for the daily cap (see ./ai-usage.ts). */
+  tenantId?: number,
 ): Promise<Omit<Draft, "id" | "accountId" | "createdAt">[]> {
   const roles = profile.nicheConfig?.buyerRoles ?? [];
   const dm = contacts.find((c) => c.isDecisionMaker) ?? contacts[0];
@@ -265,6 +270,7 @@ Return JSON with keys:
 "emailBody" (plain text, no markdown, one clear low-friction ask),
 "linkedinMessage" (max 60 words, no email pitch, reference the signal),
 "warmIntro" (a short note asking a mutual connection to introduce us, or "" if none is plausible).`,
+    { purpose: "draft", tenantId },
   );
 
   if (fromLlm && fromLlm.emailBody) {

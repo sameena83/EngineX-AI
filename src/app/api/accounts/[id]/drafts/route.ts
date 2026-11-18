@@ -32,6 +32,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/accounts/[i
     bundle.brief,
     bundle.contacts,
     vocabulary,
+    tenantId,
   );
   try {
     const drafts = await replaceDrafts(tenantId, bundle.account.id, generated);
