@@ -44,8 +44,19 @@ export type GateDecision =
  */
 const PUBLIC_PREFIXES = ["/sign-in", "/sign-up", "/api/health", "/api/cron", "/api/ingest"];
 
+/**
+ * Pages that must be readable with no session at all, matched exactly.
+ *
+ * The privacy policy and the terms are the documents a buyer's procurement review
+ * links to before anyone has an account. A policy behind a sign-in wall is not a
+ * policy. Matched exactly rather than by prefix, because these are single routes
+ * and "/privacy-notes" is not one of them.
+ */
+const PUBLIC_EXACT = ["/privacy", "/terms"];
+
 /** Pages that exist to be available without a session at all. */
 export function isPublicPath(pathname: string): boolean {
+  if (PUBLIC_EXACT.includes(pathname)) return true;
   return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 

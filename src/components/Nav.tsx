@@ -104,6 +104,16 @@ export function Nav({ identityEnabled = false }: { identityEnabled?: boolean }) 
           Change niche
         </Link>
       </div>
+      {/* The legal pages are not workspace state, so they sit below it and stay
+          available without a session (see ./lib/session-gate.ts). */}
+      <div className="mt-3 flex gap-3 px-1 text-[11px] text-slate-400">
+        <Link href="/privacy" className="hover:underline">
+          Privacy
+        </Link>
+        <Link href="/terms" className="hover:underline">
+          Terms
+        </Link>
+      </div>
     </aside>
   );
 }

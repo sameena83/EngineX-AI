@@ -66,6 +66,21 @@ test("the machine-facing endpoints stay reachable with no session", () => {
   }
 });
 
+test("the legal pages are readable without a session, and only those", () => {
+  // A buyer's procurement review opens the privacy policy before anyone has an
+  // account, so a sign-in wall in front of it would defeat the document.
+  for (const pathname of ["/privacy", "/terms"]) {
+    assert.equal(isPublicPath(pathname), true, pathname);
+    assert.deepEqual(resolveSessionGate({ ...signedOut, pathname }), { action: "allow" }, pathname);
+  }
+
+  // Exact matches, not prefixes: nothing else may inherit the exemption.
+  for (const pathname of ["/privacy-notes", "/terms/2024", "/privacypolicy"]) {
+    assert.equal(isPublicPath(pathname), false, pathname);
+    assert.equal(resolveSessionGate({ ...signedOut, pathname }).action, "sign-in", pathname);
+  }
+});
+
 test("a path that merely looks public is not", () => {
   // Prefix matching must not turn "/sign-in-notes" or "/api/healthy" into an
   // exemption for anyone who guesses the name.
