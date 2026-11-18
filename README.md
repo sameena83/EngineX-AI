@@ -60,7 +60,7 @@ never heard of.
 | Niche | Signals | Freshness half-life |
 | --- | --- | --- |
 | Data & AI | public RFP, new data leader, data hiring without leadership, funding/M&A, platform adoption | 30 days |
-| Cybersecurity | public RFP, breach/incident, new security leader, compliance audit (SOC 2, ISO 27001, NIS2…), funding/M&A, security hiring without leadership, security technology change | 45 days |
+| Cybersecurity | public RFP, new security leader, compliance audit (SOC 2, ISO 27001, NIS2…), funding/M&A, security hiring without leadership, security technology change | 45 days |
 | DevOps & platform | public RFP, reliability/outage pressure, new platform leader, funding/M&A, cloud cost drive, platform hiring without leadership, technology adoption (Kubernetes, Terraform…) | 21 days |
 | Automation & ERP | public RFP, ERP selection, new operations leader, funding/M&A, automation hiring without leadership | 60 days |
 
@@ -511,4 +511,10 @@ layer ([src/lib/generate.ts](src/lib/generate.ts)) so they can be swapped withou
 Account data here is **fictional sample data**. The product is built on company-level public
 signals and licensed person-level data. LinkedIn scraping, scanning company systems, and
 outreach triggered by data breaches are explicitly out of scope (see the report), as is
-sending email on the customer's behalf.
+sending email on the customer's behalf. That is why no preset treats a breach as a buying
+signal: the cybersecurity preset scores a tender, a certification deadline, a new security
+leader and hiring that outruns the team, and nothing else.
+
+A breach is not a moment a consultancy can win. It is already someone else's incident
+response, and approaching a company during one is the single cold approach this product
+refuses to automate.

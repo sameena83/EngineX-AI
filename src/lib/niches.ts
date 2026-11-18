@@ -373,7 +373,6 @@ const CYBERSECURITY: NichePreset = {
   sourceQueries: [
     "company appoints chief information security officer",
     "company announces SOC 2 certification",
-    "company data breach notification filed",
     "organisation migrates to zero trust architecture",
   ],
   services: [
@@ -423,25 +422,14 @@ const CYBERSECURITY: NichePreset = {
       ],
       serviceKeywords: ["assurance", "compliance", "testing", "consulting", "implementation", "delivery"],
     },
-    {
-      key: "breach_or_incident",
-      sources: ["news"],
-      label: "Breach or security incident",
-      shortLabel: "Breach / incident",
-      weight: 0.9,
-      why: "A disclosed incident triggers urgent assessment, remediation and board-level reporting work.",
-      patterns: [
-        "\\bbreach(ed|es)?\\b",
-        "\\bdata leak\\b",
-        "\\bransomware\\b",
-        "\\bcyberattack\\b|\\bcyber attack\\b",
-        "unauthorised access|unauthorized access",
-        "security incident",
-        "\\bexfiltrat(e|ed|ion)\\b",
-        "notified the (regulator|ico|dpa)",
-      ],
-      serviceKeywords: ["response", "incident", "remediation", "forensics", "detection", "assurance"],
-    },
+    // A breach is deliberately not a signal here, for two reasons that point the
+    // same way. Product-wise, outreach that arrives while a company is handling a
+    // disclosed incident is the one cold approach the ethics section rules out
+    // (see the README's "Data, compliance and ethics"). Commercially, the moment
+    // is already covered by whoever is on retainer, which is rarely a boutique
+    // practice reading a news feed. What remains are the planned moments a
+    // consultancy can actually win: a tender, a certification deadline, a new
+    // security leader, and hiring that outruns the team.
     {
       key: "security_leader_hired",
       sources: ["news", "people"],

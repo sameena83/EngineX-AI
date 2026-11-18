@@ -252,7 +252,7 @@ export function NicheEditor({
             className="input h-24 font-mono text-[11px]"
             value={cfg.sourceQueries.join("\n")}
             onChange={(e) => patchConfig({ sourceQueries: fromLines(e.target.value) })}
-            placeholder={"company appoints chief information security officer\ncompany data breach notification filed"}
+            placeholder={"company appoints chief information security officer\ncompany announces SOC 2 certification"}
           />
           <span className="mt-1 block text-[11px] text-slate-500">
             What the news source searches for. A niche with different buying moments needs different

@@ -49,3 +49,35 @@ test("the presets only declare channels the app knows", () => {
     }
   }
 });
+
+test("no preset scores a breach, because approaching an incident is out of scope", () => {
+  // The README's ethics section rules out outreach triggered by a data breach, and
+  // a signal that ranks those companies first would quietly contradict it. The
+  // cybersecurity preset lost its breach rule for that reason; this keeps it gone.
+  for (const key of ["data_ai", "cybersecurity", "devops", "automation_erp"]) {
+    const preset = nichePreset(key);
+    for (const signal of preset.signals) {
+      assert.doesNotMatch(
+        `${signal.key} ${signal.label}`,
+        /breach|incident|ransomware/i,
+        `${preset.key} scores a breach-like signal: ${signal.key}`,
+      );
+    }
+    for (const query of preset.sourceQueries) {
+      assert.doesNotMatch(query, /breach/i, `${preset.key} still polls for breaches: ${query}`);
+    }
+  }
+
+  // The remaining security signals are the planned moments a practice can win.
+  assert.deepEqual(
+    nichePreset("cybersecurity").signals.map((s) => s.key),
+    [
+      "public_rfp",
+      "security_leader_hired",
+      "compliance_audit",
+      "funding_ma",
+      "security_hiring_no_leadership",
+      "security_technology_adoption",
+    ],
+  );
+});

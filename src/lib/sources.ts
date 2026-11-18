@@ -95,7 +95,7 @@ const WEBZ_DEFAULT_QUERIES = [
  * Precedence: an explicit env override, then the tenant's own niche queries
  * (editable in the profile), then the data & AI defaults. The middle step is the
  * one that matters for a niche: a security practice polls for CISO appointments
- * and breach disclosures without anyone setting an environment variable.
+ * and certification announcements without anyone setting an environment variable.
  */
 function webzQueries(nicheQueries?: string[]): string[] {
   const raw = env("WEBZ_QUERIES");

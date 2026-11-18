@@ -425,6 +425,25 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX ai_usage_tenant_day_idx ON ai_usage (tenant_id, day DESC);
     `,
   },
+  {
+    version: 10,
+    name: "drop the breach signal",
+    sql: `
+      -- The cybersecurity preset no longer scores a breach (see ./src/lib/niches.ts):
+      -- a company handling a disclosed incident is not a moment a consultancy can
+      -- win, and approaching it then is the one cold approach this product rules
+      -- out. Removing it from the preset is not enough for a workspace that was
+      -- seeded before the change, because its vocabulary is rows in this table —
+      -- so those rows go too.
+      --
+      -- Scoped to the preset's own definition: a customer who renamed, reweighted
+      -- or rewrote the rule made it theirs, and keeps it.
+      DELETE FROM signal_definitions
+       WHERE type = 'breach_or_incident'
+         AND label = 'Breach or security incident'
+         AND short_label = 'Breach / incident';
+    `,
+  },
 ];
 
 export interface MigrationResult {
